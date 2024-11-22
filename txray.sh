@@ -176,7 +176,7 @@ extracting() {
     echo "removed: $TMP_DIRECTORY"
     exit 1
   fi
-  echo "info: Extract the Xray package to $TMP_DIRECTORY and prepare it for installation."
+  LOGN "Extract the Xray package to $TMP_DIRECTORY and prepare it for installation."
 }
 
 get_current_version() {
@@ -216,7 +216,8 @@ get_latest_version() {
 }
 
 install_xray() {
-    echo "arch: $(arch)"
+    echo -e "The OS release is: ${blue}$release${plain}"
+    echo -e "arch: ${blue}$(arch)${plain}"
     install_base
     TMP_DIRECTORY="$(mktemp -d)"
     ZIP_FILE="${TMP_DIRECTORY}/Xray-linux-$(arch).zip"
@@ -386,7 +387,7 @@ update() {
     get_current_version
     get_latest_version
     if ! version_gt "$tag_version" "$cur_ver"; then
-        echo "info: No new version. The current version of Xray is $cur_ver ."
+        LOGN "No new version. The current version of Xray is $cur_ver"
         exit 0
     else
         echo -e "\n${green}New version available: ${green_b}$tag_version${plain}"
@@ -398,7 +399,7 @@ update() {
             fi
             return 0
         fi
-        install_txray
+        install_xray
         if [[ $? == 0 ]]; then
             LOGI "Update is complete, Xray has automatically restarted "
             before_show_menu
@@ -455,7 +456,11 @@ another_version() {
     echo "Downloading and installing Xray version $tag_version..."
 
     # Call the install function with the version including 'v'
-    install_txray "$tag_version"
+    install_xray "$tag_version"
+    if [[ $? == 0 ]]; then
+        LOGI "Xray core version $tag_version installed successfully"
+        before_show_menu
+    fi
 }
 
 # Function to handle the deletion of the script file
@@ -1272,7 +1277,10 @@ add_cron() {
     crontab -l 2>/dev/null | grep -v "$cron_cmd" | crontab -
     # Add new cron job
     (crontab -l 2>/dev/null; echo "*/$cron_interval * * * * $cron_cmd") | crontab -
-    LOGI "Cron job added successfully"
+    if [[ $? == 0 ]]; then
+        LOGI "Cron job added successfully"
+        before_show_menu
+    fi
 }
 
 # Function to remove a cron job
@@ -1317,7 +1325,6 @@ show_menu() {
 ║   ${color_100} / / _>  </${color_200} __/${color_300} _ \`${color_400}/ // /${plain}   ║
 ║   ${color_100}/_/ /_/|_/${color_200}_/  ${color_300}\_,_/${color_400}\_, /${plain}    ║
 ║                     ${color_400}/___/${plain}     ║
-║                               ║
 ║   ${white_i}TXray Script${plain}                ║
 ║   ${color_100}0.${plain} Exit Script              ║
 ║───────────────────────────────║
@@ -1389,13 +1396,13 @@ show_menu() {
         bbr_menu
         ;;
     14)
-        update_geo
+        check_install && update_geo
         ;;
     15)
         wgcf_menu
         ;;
     16)
-        cron_menu
+        check_install && cron_menu
         ;;
     *)
         LOGE "Please enter the correct number [0-14]"
