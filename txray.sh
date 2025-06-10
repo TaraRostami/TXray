@@ -276,9 +276,9 @@ install_xray() {
     rm -rf "$TMP_DIRECTORY"
     LOGN "removed: $TMP_DIRECTORY"
 
-    wget -O /usr/local/xray/geoip_IR.dat https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download/geoip.dat
+    wget -O /usr/local/xray/geoip_IR.dat https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geoip.dat
     geoip_status=$?
-    wget -O /usr/local/xray/geosite_IR.dat https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download/geosite.dat
+    wget -O /usr/local/xray/geosite_IR.dat https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geosite.dat
     geosite_status=$?
 
     # Check if either download failed
@@ -812,8 +812,8 @@ update_geo() {
     2)
         systemctl stop xray
         rm -f geoip_IR.dat geosite_IR.dat
-        wget -O geoip_IR.dat -N https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download/geoip.dat
-        wget -O geosite_IR.dat -N https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download/geosite.dat
+        wget -O geoip_IR.dat -N https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geoip.dat
+        wget -O geosite_IR.dat -N https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geosite.dat
         echo -e "${green}chocolate4u datasets have been updated successfully!${plain}"
         restart
         ;;
