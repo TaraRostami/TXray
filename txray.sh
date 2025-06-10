@@ -1,20 +1,20 @@
 #!/bin/bash
 
 # Color Variables
-red='\033[0;31m'
-green='\033[0;32m'
-green_b='\033[1;32m'
-yellow='\033[0;33m'
-blue='\033[0;34m'
-white='\033[0;97m'
-white_i='\033[1;3;97m'
-teal_i='\033[3;38;5;6m'
+red='\033[31m'
+green='\033[32m'
+yellow='\033[33m'
+blue='\033[34m'
+white='\033[97m'
+teal='\033[38;5;6m'
 orange='\033[38;5;208m'
 plain='\033[0m'
 color_100='\033[38;5;201m'
 color_200='\033[38;5;164m'
 color_300='\033[38;5;127m'
 color_400='\033[38;5;90m'
+bold_text='\033[1m'
+italic_text='\033[3m'
 
 # Warp Variables
 wgcf_bin="/usr/bin/wgcf"
@@ -390,7 +390,7 @@ update() {
         LOGN "No new version. The current version of Xray is $cur_ver"
         exit 0
     else
-        echo -e "\n${green}New version available: ${green_b}$tag_version${plain}"
+        echo -e "\n${green}New version available: ${bold_text}${green}$tag_version${plain}"
         confirm "This function will forcefully reinstall the latest version, and the data will not be lost. Do you want to continue?" "y"
         if [[ $? != 0 ]]; then
             LOGE "Cancelled"
@@ -760,7 +760,7 @@ show_status() {
     fi
     case $status_result in
     0)
-        echo -e "Xray state: ${green_b}Running${plain}"
+        echo -e "Xray state: ${bold_text}${green}Running${plain}"
         show_enable_status
         ;;
     1)
@@ -776,13 +776,13 @@ show_status() {
 
 show_version_status() {
     get_current_version
-    echo -e "Current Xray Core Version: ${green_b}$cur_ver${plain}"
+    echo -e "Current Xray Core Version: ${bold_text}${green}$cur_ver${plain}"
 }
 
 show_enable_status() {
     check_enabled
     if [[ $? == 0 ]]; then
-        echo -e "Start automatically: ${green_b}Active${plain}"
+        echo -e "Start automatically: ${bold_text}${green}Active${plain}"
     else
         echo -e "Start automatically: ${red}Disable${plain}"
     fi
@@ -834,7 +834,7 @@ update_geo() {
 }
 
 show_usage() {
-    echo -e "${white_i}TXray${plain} control menu usages: "
+    echo -e "${bold_text}${italic_text}${white}TXray${plain} control menu usages: "
     echo "────────────────────────────────────────────────"
     echo -e "SUBCOMMANDS:"
     echo -e "txray              - Admin Management Script"
@@ -997,7 +997,7 @@ wgcf_status() {
         echo -e "Premium data  : ${orange}$st_premium_data${plain}"
         echo -e "Quota         : ${orange}$st_quota${plain}\n"
         wgcf_get_configuration
-        echo -e "${white_i}Installed Warp Details:${plain}"
+        echo -e "${bold_text}${italic_text}${white}Installed Warp Details:${plain}"
         echo -e "${orange}PrivateKey:${plain} $private_key"
         echo -e "${orange}Address:${plain} $address"
         echo -e "${orange}MTU:${plain} $mtu"
@@ -1139,7 +1139,7 @@ upgrade_warp_plus() {
 wgcf_outbound_json() {
     wgcf_get_configuration
     # Generate and display JSON structure
-    echo -e "${teal_i}    {
+    echo -e "${italic_text}${teal}    {
       \"tag\": \"warp\",
       \"protocol\": \"wireguard\",
       \"settings\": {
@@ -1247,7 +1247,7 @@ check_cron() {
     if [[ -n "$cron_line" ]]; then
         local cron_interval
         cron_interval=$(echo "$cron_line" | awk -F'/' '{print $2}' | awk '{print $1}')
-        echo -e "Cron job: ${green_b}Active${green} (Every $cron_interval minutes)${plain}"
+        echo -e "Cron job: ${bold_text}${green}Active${green} (Every $cron_interval minutes)${plain}"
     else
         echo -e "Cron job: ${yellow}not active${plain}"
     fi
@@ -1325,12 +1325,12 @@ show_menu() {
 ║   ${color_100} / / _>  </${color_200} __/${color_300} _ \`${color_400}/ // /${plain}   ║
 ║   ${color_100}/_/ /_/|_/${color_200}_/  ${color_300}\_,_/${color_400}\_, /${plain}    ║
 ║                     ${color_400}/___/${plain}     ║
-║   ${white_i}TXray Script${plain}                ║
+║   ${bold_text}${italic_text}${white}TXray Script${plain}                ║
 ║   ${color_100}0.${plain} Exit Script              ║
 ║───────────────────────────────║
 ║   ${color_100}1.${plain} Install                  ║
 ║   ${color_100}2.${plain} Update                   ║
-║   ${color_100}3.${plain} Update Menu              ║
+║   ${color_100}3.${plain} Update ${bold_text}${italic_text}${color_100}TXray${plain}             ║
 ║   ${color_100}4.${plain} Another Version          ║
 ║   ${color_100}5.${plain} Uninstall                ║
 ║───────────────────────────────║
