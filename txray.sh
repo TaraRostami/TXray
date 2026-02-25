@@ -81,38 +81,38 @@ if [[ "$(uname)" != 'Linux' ]]; then
 fi
 
 arch() {
-  case "$(uname -m)" in
-    'i386' | 'i686') echo '32' ;;
-    'amd64' | 'x86_64') echo '64' ;;
-    'armv5tel') echo 'arm32-v5' ;;
-    'armv6l')
-      if grep -qw 'vfp' /proc/cpuinfo; then
-        echo 'arm32-v6'
-      else
-        echo 'arm32-v5'
-      fi ;;
-    'armv7' | 'armv7l')
-      if grep -qw 'vfp' /proc/cpuinfo; then
-        echo 'arm32-v7a'
-      else
-        echo 'arm32-v5'
-      fi ;;
-    'armv8' | 'aarch64') echo 'arm64-v8a' ;;
-    'mips') echo 'mips32' ;;
-    'mipsle') echo 'mips32le' ;;
-    'mips64')
-      if lscpu | grep -q "Little Endian"; then
-        echo 'mips64le'
-      else
-        echo 'mips64'
-      fi ;;
-    'mips64le') echo 'mips64le' ;;
-    'ppc64') echo 'ppc64' ;;
-    'ppc64le') echo 'ppc64le' ;;
-    'riscv64') echo 'riscv64' ;;
-    's390x') echo 's390x' ;;
-    *) echo -e "${green}Unsupported CPU architecture! ${plain}" && exit 1 ;;
-  esac
+    case "$(uname -m)" in
+        'i386' | 'i686') echo '32' ;;
+        'amd64' | 'x86_64') echo '64' ;;
+        'armv5tel') echo 'arm32-v5' ;;
+        'armv6l')
+            if grep -qw 'vfp' /proc/cpuinfo; then
+                echo 'arm32-v6'
+            else
+                echo 'arm32-v5'
+            fi ;;
+        'armv7' | 'armv7l')
+            if grep -qw 'vfp' /proc/cpuinfo; then
+                echo 'arm32-v7a'
+            else
+                echo 'arm32-v5'
+            fi ;;
+        'armv8' | 'aarch64') echo 'arm64-v8a' ;;
+        'mips') echo 'mips32' ;;
+        'mipsle') echo 'mips32le' ;;
+        'mips64')
+            if lscpu | grep -q "Little Endian"; then
+                echo 'mips64le'
+            else
+                echo 'mips64'
+            fi ;;
+        'mips64le') echo 'mips64le' ;;
+        'ppc64') echo 'ppc64' ;;
+        'ppc64le') echo 'ppc64le' ;;
+        'riscv64') echo 'riscv64' ;;
+        's390x') echo 's390x' ;;
+        *) echo -e "${green}Unsupported CPU architecture! ${plain}" && exit 1 ;;
+    esac
 }
 
 install_base() {
@@ -170,27 +170,27 @@ before_show_menu() {
 }
 
 extracting() {
-  if ! unzip -q "$1" -d "$TMP_DIRECTORY"; then
-    echo 'error: Xray extracting failed.'
-    rm -rf "$TMP_DIRECTORY"
-    echo "removed: $TMP_DIRECTORY"
-    exit 1
-  fi
-  LOGN "Extract the Xray package to $TMP_DIRECTORY and prepare it for installation."
+    if ! unzip -q "$1" -d "$TMP_DIRECTORY"; then
+        echo 'error: Xray extracting failed.'
+        rm -rf "$TMP_DIRECTORY"
+        echo "removed: $TMP_DIRECTORY"
+        exit 1
+    fi
+    LOGN "Extract the Xray package to $TMP_DIRECTORY and prepare it for installation."
 }
 
 get_current_version() {
-  # Get the current version
-  if [[ -f '/usr/local/xray/xray-linux' ]]; then
-    cur_ver="$(/usr/local/xray/xray-linux -version | awk 'NR==1 {print $2}')"
-    cur_ver="v${cur_ver#v}"
-  else
-    cur_ver=""
-  fi
+    # Get the current version
+    if [[ -f '/usr/local/xray/xray-linux' ]]; then
+        cur_ver="$(/usr/local/xray/xray-linux -version | awk 'NR==1 {print $2}')"
+        cur_ver="v${cur_ver#v}"
+    else
+        cur_ver=""
+    fi
 }
 
 version_gt() {
-  test "$(echo -e "$1\\n$2" | sort -V | head -n 1)" != "$1"
+    test "$(echo -e "$1\\n$2" | sort -V | head -n 1)" != "$1"
 }
 
 get_latest_version() {
@@ -198,19 +198,19 @@ get_latest_version() {
     tmp_file="$(mktemp)"
 
     if ! curl -Ls -H "Accept: application/vnd.github.v3+json" -o "$tmp_file" "https://api.github.com/repos/XTLS/Xray-core/releases/latest"; then
-      rm "$tmp_file"
-      echo 'error: Failed to get release list, please check your network.'
-      exit 1
+        rm "$tmp_file"
+        echo 'error: Failed to get release list, please check your network.'
+        exit 1
     fi
     tag_version=$(grep '"tag_name":' "$tmp_file" | sed -E 's/.*"([^"]+)".*/\1/')
     if [[ -z "$tag_version" ]]; then
-      if grep -q "API rate limit exceeded"; then
-        echo "error: github API rate limit exceeded"
-      else
-        echo "${red}Failed to fetch xray version. Please try again later${plain}"
-      fi
-      rm "$tmp_file"
-      exit 1
+        if grep -q "API rate limit exceeded"; then
+            echo "error: github API rate limit exceeded"
+        else
+            echo "${red}Failed to fetch xray version. Please try again later${plain}"
+        fi
+        rm "$tmp_file"
+        exit 1
     fi
     rm "$tmp_file"
 }
@@ -228,7 +228,7 @@ install_xray() {
     if [ $# == 0 ]; then
         get_latest_version
         echo -e "Got xray latest version: ${tag_version}, beginning the installation..."
-        wget --no-check-certificate -O $ZIP_FILE "https://github.com/XTLS/Xray-core/releases/download/${tag_version}/Xray-linux-$(arch).zip"
+        wget -4 -O $ZIP_FILE "https://github.com/XTLS/Xray-core/releases/download/${tag_version}/Xray-linux-$(arch).zip"
         if [[ $? -ne 0 ]]; then
             echo -e "${red}Downloading Xray core failed, ensure your server can access GitHub${plain}"
             rm -rf "$TMP_DIRECTORY"
@@ -239,7 +239,7 @@ install_xray() {
         tag_version_numeric=${tag_version#v}
         url="https://github.com/XTLS/Xray-core/releases/download/${tag_version}/Xray-linux-$(arch).zip"
         echo -e "Beginning to install Xray $1"
-        wget --no-check-certificate -O $ZIP_FILE ${url}
+        wget -4 -O $ZIP_FILE ${url}
         if [[ $? -ne 0 ]]; then
             echo -e "${red}Download of Xray core $1 failed, check if the version exists${plain}"
             rm -rf "$TMP_DIRECTORY"
@@ -254,17 +254,17 @@ install_xray() {
 
     # Check if the directory doesn't exist
     if [[ ! -d "$XRAY_DIR" ]]; then
-      LOGN "Directory $XRAY_DIR does not exist. Creating it..."
-      install -d "$XRAY_DIR" && echo "Directory $XRAY_DIR created successfully."
+        LOGN "Directory $XRAY_DIR does not exist. Creating it..."
+        install -d "$XRAY_DIR" && echo "Directory $XRAY_DIR created successfully."
     else
-      LOGN "Directory $XRAY_DIR already exists."
+        LOGN "Directory $XRAY_DIR already exists."
     fi
 
     if [[ ! -d "$JSON_DIR" ]]; then
-      LOGN "Directory $JSON_DIR does not exist. Creating it..."
-      install -d "$JSON_DIR" && echo "Directory $JSON_DIR created successfully."
+        LOGN "Directory $JSON_DIR does not exist. Creating it..."
+        install -d "$JSON_DIR" && echo "Directory $JSON_DIR created successfully."
     else
-      LOGN "Directory $JSON_DIR already exists."
+        LOGN "Directory $JSON_DIR already exists."
     fi
 
     extracting "$ZIP_FILE"
@@ -276,9 +276,9 @@ install_xray() {
     rm -rf "$TMP_DIRECTORY"
     LOGN "removed: $TMP_DIRECTORY"
 
-    wget -O /usr/local/xray/geoip_IR.dat https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geoip.dat
+    wget -4 -O /usr/local/xray/geoip_IR.dat "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geoip.dat"
     geoip_status=$?
-    wget -O /usr/local/xray/geosite_IR.dat https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geosite.dat
+    wget -4 -O /usr/local/xray/geosite_IR.dat "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geosite.dat"
     geosite_status=$?
 
     # Check if either download failed
@@ -286,7 +286,7 @@ install_xray() {
         LOGW "File geoip.dat and/or geosite.dat failed to download properly. Download them again via the script menu, option 14."
     fi
 
-    wget --no-check-certificate -O /usr/bin/txray https://raw.githubusercontent.com/tararostami/txray/main/txray.sh
+    wget -4 -O /usr/bin/txray "https://raw.githubusercontent.com/tararostami/txray/main/txray.sh"
     chmod +x /usr/bin/txray
 
     if [[ ! -f /etc/xray/config.json ]]; then
@@ -418,7 +418,7 @@ update_menu() {
         return 0
     fi
 
-    wget --no-check-certificate -O /usr/bin/txray https://raw.githubusercontent.com/TaraRostami/txray/main/txray.sh
+    wget -4 -O /usr/bin/txray "https://raw.githubusercontent.com/TaraRostami/txray/main/txray.sh"
     chmod +x /usr/bin/txray
 
     if [[ $? == 0 ]]; then
@@ -436,7 +436,7 @@ another_version() {
     while true; do
         echo -ne "Enter the Xray version ${yellow}(like 24.11.11)${plain}: "
         read tag_version
-        
+
         if [ -z "$tag_version" ]; then
             echo "Xray version cannot be empty. Exiting."
             exit 1
@@ -599,7 +599,7 @@ show_log() {
     1)
         journalctl -u xray -e --no-pager -f -p debug
         if [[ $# == 0 ]]; then
-        before_show_menu
+            before_show_menu
         fi
         ;;
     2)
@@ -804,24 +804,24 @@ update_geo() {
     1)
         systemctl stop xray
         rm -f geoip.dat geosite.dat
-        wget -N https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
-        wget -N https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
+        wget -N "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+        wget -N "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
         echo -e "${green}Loyalsoldier datasets have been updated successfully!${plain}"
         restart
         ;;
     2)
         systemctl stop xray
         rm -f geoip_IR.dat geosite_IR.dat
-        wget -O geoip_IR.dat -N https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geoip.dat
-        wget -O geosite_IR.dat -N https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geosite.dat
+        wget -O geoip_IR.dat -N "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geoip.dat"
+        wget -O geosite_IR.dat -N "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geosite.dat"
         echo -e "${green}chocolate4u datasets have been updated successfully!${plain}"
         restart
         ;;
     3)
         systemctl stop xray
         rm -f geoip_VN.dat geosite_VN.dat
-        wget -O geoip_VN.dat -N https://github.com/vuong2023/vn-v2ray-rules/releases/latest/download/geoip.dat
-        wget -O geosite_VN.dat -N https://github.com/vuong2023/vn-v2ray-rules/releases/latest/download/geosite.dat
+        wget -O geoip_VN.dat -N "https://github.com/vuong2023/vn-v2ray-rules/releases/latest/download/geoip.dat"
+        wget -O geosite_VN.dat -N "https://github.com/vuong2023/vn-v2ray-rules/releases/latest/download/geosite.dat"
         echo -e "${green}vuong2023 datasets have been updated successfully!${plain}"
         restart
         ;;
@@ -896,7 +896,7 @@ mtu_warp() {
         IP1='1.1.1.1'
         IP2='8.8.8.8'
     fi
-    
+
     # Loop to find the optimal MTU value
     while true; do
         if ${ping} -c1 -W1 -s$((${MTUy} - 28)) -Mdo ${IP1} >/dev/null 2>&1 || ${ping} -c1 -W1 -s$((${MTUy} - 28)) -Mdo ${IP2} >/dev/null 2>&1; then
@@ -921,7 +921,7 @@ mtu_warp() {
 mtu_transfer() {
     backup_mtu=$(grep -Po '(?<=^MTU = )\d+' "$wgcf_dir/backup-profile.conf")
     if [[ -z $backup_mtu ]]; then
-        backup_mtu=1480
+        backup_mtu=1280
     fi
     sed -i "s/^MTU = .*/MTU = $backup_mtu/" "$wgcf_dir/$wgcf_profile"
 }
@@ -931,19 +931,19 @@ get_latest_wgcf() {
     tmp_file="$(mktemp)"
 
     if ! curl -Ls -H "Accept: application/vnd.github.v3+json" -o "$tmp_file" "https://api.github.com/repos/ViRb3/wgcf/releases/latest"; then
-      rm "$tmp_file"
-      LOGE "Failed to get release list, please check your network."
-      exit 1
+        rm "$tmp_file"
+        LOGE "Failed to get release list, please check your network."
+        exit 1
     fi
     tag_version=$(grep '"tag_name":' "$tmp_file" | sed -E 's/.*"([^"]+)".*/\1/')
     if [[ -z "$tag_version" ]]; then
-      if grep -q "API rate limit exceeded" "$tmp_file"; then
-        LOGE "github API rate limit exceeded"
-      else
-        LOGE "Failed to fetch xray version. Please try again later"
-      fi
-      rm "$tmp_file"
-      exit 1
+        if grep -q "API rate limit exceeded" "$tmp_file"; then
+            LOGE "github API rate limit exceeded"
+        else
+            LOGE "Failed to fetch xray version. Please try again later"
+        fi
+        rm "$tmp_file"
+        exit 1
     fi
     rm "$tmp_file"
 }
@@ -972,39 +972,56 @@ wgcf_get_configuration() {
 }
 
 wgcf_status() {
-    if [ -f "$wgcf_dir/$wgcf_account" ]; then
-        st_output=$($wgcf_bin --config "$wgcf_dir/$wgcf_account" status 2>&1)
-        st_device_name=$(echo "$st_output" | awk -F': +' '/Device name/ {print $2}')
-        st_device_model=$(echo "$st_output" | awk -F': +' '/Device model/ {print $2}')
-        st_device_active=$(echo "$st_output" | awk -F': +' '/Device active/ {print $2}')
-        st_account_type=$(echo "$st_output" | awk -F': +' '/Account type/ {print $2}')
-        st_role=$(echo "$st_output" | awk -F': +' '/Role/ {print $2}')
-        st_premium_data=$(echo "$st_output" | awk -F': +' '/Premium data/ {print $2}')
-        st_quota=$(echo "$st_output" | awk -F': +' '/Quota/ {print $2}')
-
-        echo -e "───────────────────────────────────────────────────────────"
-        # Check if the Account type is "limited" and print a message
-        if [[ "$st_account_type" == "limited" ]]; then
-            echo -e "${orange}You are using Warp+${plain}\n"
-        else
-            echo -e "You are using free Warp\n"
-        fi
-        echo -e "Device name   : ${orange}$st_device_name${plain}"
-        echo -e "Device model  : ${orange}$st_device_model${plain}"
-        echo -e "Device active : ${orange}$st_device_active${plain}"
-        echo -e "Account type  : ${orange}$st_account_type${plain}"
-        echo -e "Role          : ${orange}$st_role${plain}"
-        echo -e "Premium data  : ${orange}$st_premium_data${plain}"
-        echo -e "Quota         : ${orange}$st_quota${plain}\n"
-        wgcf_get_configuration
-        echo -e "${bold_text}${italic_text}${white}Installed Warp Details:${plain}"
-        echo -e "${orange}PrivateKey:${plain} $private_key"
-        echo -e "${orange}Address:${plain} $address"
-        echo -e "${orange}MTU:${plain} $mtu"
-        echo -e "───────────────────────────────────────────────────────────"
-    else
+    local cfg="$wgcf_dir/$wgcf_account"
+    if ! [ -f "$cfg" ]; then
         LOGW "Account file not found, Please reinstall warp."
+        return 1
     fi
+
+    local raw rc cleaned account_type account_type_lc plan_line
+    raw="$($wgcf_bin --config "$cfg" status 2>&1)"
+    rc=$?
+    [[ $rc -eq 0 ]] || { echo -e "$raw"; return $rc; }
+
+    cleaned="$(printf '%s\n' "$raw" | tail -n +3 | sed '/=/d')"
+
+    account_type="$(printf '%s\n' "$cleaned" | awk -F':[[:space:]]*' '/^[[:space:]]*Account type[[:space:]]*:/ {print $2; exit}')"
+    account_type_lc="$(printf '%s' "$account_type" | tr '[:upper:]' '[:lower:]')"
+
+    if [[ "$account_type_lc" == "limited" || "$account_type_lc" == "warp+" || "$account_type_lc" == "plus" ]]; then
+        plan_line="${orange}You are using Warp+${plain}"
+    else
+        plan_line="You are using free Warp"
+    fi
+
+    echo -e "───────────────────────────────────────────────────────────"
+    echo -e "${plan_line}"
+
+    printf '%s\n' "$cleaned" | awk -v o="$orange" -v p="$plain" -v b="$bold_text" '
+      {
+        if ($0 ~ /^[[:space:]]*(Account|Devices)[[:space:]]*$/) {
+          print b o "[" $0 "]" p
+          next
+        }
+
+        m = match($0, /:[[:space:]]+/)
+        if (m) {
+          left  = substr($0, 1, RSTART)
+          right = substr($0, RSTART + RLENGTH)
+          print left " " o right p
+        } else {
+          print $0
+        }
+      }
+      END { print "" }
+    '
+
+    wgcf_get_configuration
+    echo -e "${bold_text}${italic_text}${white}Installed Warp Details:${plain}"
+    echo -e "${orange}PrivateKey:${plain} $private_key"
+    echo -e "${orange}Address:${plain} $address"
+    echo -e "${orange}MTU:${plain} $mtu"
+    echo -e "───────────────────────────────────────────────────────────"
 }
 
 register_warp() {
@@ -1038,17 +1055,16 @@ install_warp() {
     wgcf_file="${temp_dir}/wgcf"
 
     get_latest_wgcf
-    wget --no-check-certificate -O "$wgcf_file" "https://github.com/ViRb3/wgcf/releases/download/${tag_version}/wgcf_${tag_version#v}_linux_$(arch_wgcf)"
-    if [[ $? -ne 0 ]]; then
-        LOGE "Downloading Xray core failed, ensure your server can access GitHub"
+    if ! wget -4 -O "$wgcf_file" "https://github.com/ViRb3/wgcf/releases/download/${tag_version}/wgcf_${tag_version#v}_linux_$(arch_wgcf)"; then
+        LOGE "Downloading Warp failed, ensure your server can access GitHub"
         rm -rf "$temp_dir"
         exit 1
     fi
+
     install -D "$wgcf_file" "$wgcf_bin"
     chmod +x "$wgcf_bin"
-    register_warp
 
-    if [[ $? -ne 0 ]]; then
+    if ! register_warp; then
         LOGE "Failed to register Warp account after $max_attempts attempts, Try again later."
         rm -rf "$temp_dir"
         rm -f "$wgcf_bin"
@@ -1098,7 +1114,7 @@ upgrade_warp_plus() {
 
     if [[ $account_type == "limited" ]]; then
         echo "Warp+ is installed. No need to upgrade again."
-        return
+        return 0
     fi
 
     while true; do
@@ -1118,14 +1134,12 @@ upgrade_warp_plus() {
     rm -f "$wgcf_dir/$wgcf_account" >/dev/null 2>&1
     rm -f "$wgcf_dir/$wgcf_profile" >/dev/null 2>&1
     cd "$wgcf_dir"
-    register_warp
 
-    if [[ $? -ne 0 ]]; then
+    if ! register_warp; then
         get_back
     fi
 
-    sed -i "s|license_key = .*|license_key = '$license'|" "$wgcf_dir/$wgcf_account"
-    wgcf_cmd=$($wgcf_bin --config "$wgcf_dir/$wgcf_account" update 2>&1)
+    wgcf_cmd=$($wgcf_bin --config "$wgcf_dir/$wgcf_account" update --license-key "${license}" 2>&1)
     if echo "$wgcf_cmd" | grep -q "Successfully updated"; then
         wgcf_cmd=$("$wgcf_bin" --config "$wgcf_dir/$wgcf_account" generate >/dev/null 2>&1)
         mtu_transfer
@@ -1350,7 +1364,7 @@ show_menu() {
 ╚═══════════════════════════════╝
 "
     show_status
-    echo && read -p "Please enter your selection [0-14]: " num
+    echo && read -p "Please enter your selection [0-16]: " num
 
     case "${num}" in
     0)
@@ -1405,7 +1419,7 @@ show_menu() {
         check_install && cron_menu
         ;;
     *)
-        LOGE "Please enter the correct number [0-14]"
+        LOGE "Please enter the correct number [0-16]"
         ;;
     esac
 }
