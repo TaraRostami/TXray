@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Color Variables
+# [Constants: colors]
 red='\033[31m'
 green='\033[32m'
 yellow='\033[33m'
@@ -16,69 +16,378 @@ color_400='\033[38;5;90m'
 bold_text='\033[1m'
 italic_text='\033[3m'
 
-# Warp Variables
+# [Constants: WARP/wgcf]
 wgcf_bin="/usr/bin/wgcf"
 wgcf_account="wgcf-account.toml"
 wgcf_profile="wgcf-profile.conf"
 wgcf_dir="/etc/txray-wgcf"
 
-# Cron Variables
+# [Constants: cron]
 cron_file="/var/log/xray/access.log"
 cron_cmd="truncate -s 0 \"$cron_file\""
 
-#Message levels functions
+# [Runtime proxy]
+# Optional session-wide proxy. Examples:
+#   TXRAY_PROXY="socks5h://127.0.0.1:1080" txray install
+#   TXRAY_PROXY="http://127.0.0.1:8080" txray update
+txray_proxy="${TXRAY_PROXY:-}"
+
+# [Logging and generic helpers]
 function LOGI() {
-    echo -e "${green}[INF] $* ${plain}"
+    echo -e "${plain}[INF] $* ${plain}" >&2
 }
 
 function LOGN() {
-    echo -e "${blue}[NOT] $* ${plain}"
+    echo -e "${blue}[NOT] $* ${plain}" >&2
 }
 
 function LOGW() {
-    echo -e "${yellow}[WRN] $* ${plain}"
+    echo -e "${yellow}[WRN] $* ${plain}" >&2
 }
 
 function LOGE() {
-    echo -e "${red}[ERR] $* ${plain}"
+    echo -e "${red}[ERR] $* ${plain}" >&2
 }
 
-# check root
-[[ $EUID -ne 0 ]] && LOGE "ERROR: You must be root to run this script! \n" && exit 1
+function LOGS() {
+    echo -e "${green}[SUC] $* ${plain}" >&2
+}
 
-# Check OS and set release variable
-if [[ -f /etc/os-release ]]; then
-    source /etc/os-release
-    release=$ID
-elif [[ -f /usr/lib/os-release ]]; then
-    source /usr/lib/os-release
-    release=$ID
-else
-    echo "Failed to check the system OS, please contact the author!" >&2
+function DIE() {
+    LOGE "$*"
     exit 1
-fi
+}
 
-echo -e "The OS release is: ${color_100}$release${plain}"
+curl_txray() {
+    if [[ -n "$txray_proxy" ]]; then
+        curl --proxy "$txray_proxy" "$@"
+    else
+        curl "$@"
+    fi
+}
 
-if [[ "$(uname)" != 'Linux' ]]; then
-    echo -e "${red}Your operating system is not supported by this script.${plain}\n"
-    echo "Please ensure you are using one of the following supported operating systems:"
-    echo "- Ubuntu"
-    echo "- Debian"
-    echo "- CentOS"
-    echo "- OpenEuler"
-    echo "- Fedora"
-    echo "- Arch Linux"
-    echo "- Parch Linux"
-    echo "- Manjaro"
-    echo "- Armbian"
-    echo "- AlmaLinux"
-    echo "- Rocky Linux"
-    echo "- Oracle Linux"
-    echo "- OpenSUSE Tumbleweed"
-    echo "- Amazon Linux 2023"
-    exit 1
-fi
+trim_value() {
+    local value="$1"
+
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+
+    printf '%s\n' "$value"
+}
+
+normalize_proxy_url() {
+    local proxy
+    local scheme
+    local scheme_lc
+    local rest
+
+    proxy="$(trim_value "$1")"
+
+    if [[ -z "$proxy" ]]; then
+        return 1
+    fi
+
+    if [[ "$proxy" == *"://"* ]]; then
+        scheme="${proxy%%://*}"
+        rest="${proxy#*://}"
+        scheme_lc="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
+
+        case "$scheme_lc" in
+        http | https | socks4 | socks4a | socks5 | socks5h)
+            printf '%s://%s\n' "$scheme_lc" "$rest"
+            ;;
+        *)
+            printf '%s\n' "$proxy"
+            ;;
+        esac
+    else
+        printf 'http://%s\n' "$proxy"
+    fi
+}
+
+validate_proxy_url() {
+    local proxy="$1"
+    local scheme
+    local rest
+    local host
+    local port
+
+    if [[ -z "$proxy" ]]; then
+        LOGE "Proxy cannot be empty."
+        return 1
+    fi
+
+    if [[ "$proxy" =~ [[:space:]] ]]; then
+        LOGE "Proxy URL must not contain spaces."
+        return 1
+    fi
+
+    case "$proxy" in
+    http://* | https://* | socks4://* | socks4a://* | socks5://* | socks5h://*)
+        ;;
+    *)
+        LOGE "Unsupported proxy scheme. Use http://, https://, socks4://, socks4a://, socks5://, or socks5h://."
+        return 1
+        ;;
+    esac
+
+    scheme="${proxy%%://*}"
+    rest="${proxy#*://}"
+
+    if [[ -z "$rest" ]]; then
+        LOGE "Proxy host is missing."
+        return 1
+    fi
+
+    # Remove optional credentials. For credentials containing '@', users should URL-encode it as %40.
+    if [[ "$rest" == *@* ]]; then
+        rest="${rest##*@}"
+    fi
+
+    if [[ "$rest" == */* || "$rest" == *\?* || "$rest" == *#* ]]; then
+        LOGE "Proxy URL must not include a path, query string, or fragment."
+        return 1
+    fi
+
+    if [[ "$rest" == \[* ]]; then
+        # IPv6 format must be exactly: [::1]:1080
+        if [[ "$rest" =~ ^\[([^]]+)\]:([0-9]+)$ ]]; then
+            host="${BASH_REMATCH[1]}"
+            port="${BASH_REMATCH[2]}"
+        else
+            LOGE "IPv6 proxy hosts must use brackets and include a port. Example: socks5h://[::1]:1080"
+            return 1
+        fi
+    else
+        host="${rest%:*}"
+        port="${rest##*:}"
+    fi
+
+    if [[ -z "$host" || "$host" == "$rest" ]]; then
+        LOGE "Proxy host or port is missing. Example: socks5h://127.0.0.1:1080"
+        return 1
+    fi
+
+    if [[ -z "$port" || ! "$port" =~ ^[0-9]+$ ]]; then
+        LOGE "Proxy port must be a number."
+        return 1
+    fi
+
+    if (( port < 1 || port > 65535 )); then
+        LOGE "Proxy port must be between 1 and 65535."
+        return 1
+    fi
+
+    if [[ "$host" == *":"* && "$proxy" != *"://["* ]]; then
+        LOGE "IPv6 proxy hosts must use brackets. Example: socks5h://[::1]:1080"
+        return 1
+    fi
+
+    case "$scheme" in
+    http | https | socks4 | socks4a | socks5 | socks5h)
+        ;;
+    *)
+        LOGE "Unsupported proxy scheme."
+        return 1
+        ;;
+    esac
+
+    return 0
+}
+
+set_proxy_interactive() {
+    local input
+    local normalized_proxy
+
+    echo "Supported proxy examples:"
+    echo "  http://127.0.0.1:8080"
+    echo "  http://user:password@127.0.0.1:8080"
+    echo "  socks5h://127.0.0.1:1080"
+    echo "  socks5h://user:password@127.0.0.1:1080"
+    echo "  socks5h://[::1]:1080"
+    echo
+    read -r -p "Enter proxy URL: " input
+
+    if [[ -z "$input" ]]; then
+        LOGW "Proxy was not changed because no value was entered."
+        return 1
+    fi
+
+    normalized_proxy="$(normalize_proxy_url "$input")" || {
+        LOGE "Invalid proxy value."
+        return 1
+    }
+
+    validate_proxy_url "$normalized_proxy" || return 1
+
+    txray_proxy="$normalized_proxy"
+    export TXRAY_PROXY="$txray_proxy"
+    LOGS "Proxy enabled for this script session: $txray_proxy"
+}
+
+clear_proxy() {
+    txray_proxy=""
+    unset TXRAY_PROXY
+    LOGS "Proxy disabled for this script session."
+}
+
+show_proxy_status() {
+    if [[ -n "$txray_proxy" ]]; then
+        echo -e "Proxy: ${bold_text}${green}Active${plain} (${txray_proxy})"
+    else
+        echo -e "Proxy: ${yellow}Disabled${plain}"
+    fi
+}
+
+test_proxy() {
+    if [[ -z "$txray_proxy" ]]; then
+        LOGW "Proxy is not configured."
+        return 1
+    fi
+
+    validate_proxy_url "$txray_proxy" || return 1
+
+    if curl_txray -4fsSL --connect-timeout 10 https://api.github.com >/dev/null; then
+        LOGS "Proxy test passed."
+    else
+        LOGE "Proxy test failed. Check the proxy address, port, credentials, and network access."
+        return 1
+    fi
+}
+
+initialize_proxy() {
+    local normalized_proxy
+
+    if [[ -z "$txray_proxy" ]]; then
+        return 0
+    fi
+
+    normalized_proxy="$(normalize_proxy_url "$txray_proxy")" || DIE "Invalid TXRAY_PROXY value."
+    validate_proxy_url "$normalized_proxy" || DIE "Invalid TXRAY_PROXY value."
+
+    txray_proxy="$normalized_proxy"
+    export TXRAY_PROXY="$txray_proxy"
+}
+
+download_file() {
+    local output="$1"
+    local url="$2"
+
+    if [[ -z "$output" || -z "$url" ]]; then
+        LOGE "download_file requires an output path and a URL."
+        return 1
+    fi
+
+    curl_txray -4fL --retry 3 --retry-delay 2 --connect-timeout 15 -o "$output" "$url"
+}
+
+download_file_if_modified() {
+    local output="$1"
+    local url="$2"
+
+    if [[ -z "$output" || -z "$url" ]]; then
+        LOGE "download_file_if_modified requires an output path and a URL."
+        return 1
+    fi
+
+    if [[ -f "$output" ]]; then
+        curl_txray -4fLR -z "$output" --retry 3 --retry-delay 2 --connect-timeout 15 -o "$output" "$url"
+    else
+        curl_txray -4fLR --retry 3 --retry-delay 2 --connect-timeout 15 -o "$output" "$url"
+    fi
+}
+
+verify_xray_archive() {
+    local archive="$1"
+    local digest_url="$2"
+    local digest_file="${archive}.dgst"
+    local expected_sha256=""
+    local actual_sha256=""
+
+    if [[ ! -f "$archive" ]]; then
+        LOGE "Cannot verify Xray archive because the file does not exist: $archive"
+        return 1
+    fi
+
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        LOGW "sha256sum is not available; skipping checksum verification."
+        return 0
+    fi
+
+    if ! download_file "$digest_file" "$digest_url"; then
+        LOGW "Could not download the Xray checksum file; continuing without checksum verification."
+        rm -f "$digest_file"
+        return 0
+    fi
+
+    expected_sha256="$(awk -F '= ' 'tolower($1) == "sha2-256" {print $2; exit}' "$digest_file" | tr -d '\r')"
+    if [[ ! "$expected_sha256" =~ ^[a-fA-F0-9]{64}$ ]]; then
+        LOGW "Checksum file did not contain a SHA-256 value; continuing without checksum verification."
+        rm -f "$digest_file"
+        return 0
+    fi
+
+    actual_sha256="$(sha256sum "$archive" | awk '{print $1}')"
+    rm -f "$digest_file"
+
+    if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+        rm -f "$archive"
+        LOGE "Xray checksum verification failed. The downloaded archive has been removed."
+        return 1
+    fi
+
+    LOGS "Xray checksum verification passed."
+}
+
+ensure_linux() {
+    if [[ "$(uname)" != "Linux" ]]; then
+        LOGE "This operating system is not supported by this script.\n"
+        echo "Supported operating systems:"
+        echo "- Ubuntu"
+        echo "- Debian"
+        echo "- CentOS"
+        echo "- OpenEuler"
+        echo "- Fedora"
+        echo "- Arch Linux"
+        echo "- Parch Linux"
+        echo "- Manjaro"
+        echo "- Armbian"
+        echo "- AlmaLinux"
+        echo "- Rocky Linux"
+        echo "- Oracle Linux"
+        echo "- OpenSUSE Tumbleweed"
+        echo "- Amazon Linux 2023"
+        exit 1
+    fi
+}
+
+detect_release() {
+    if [[ -f /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        source /etc/os-release
+        release="$ID"
+    elif [[ -f /usr/lib/os-release ]]; then
+        # shellcheck disable=SC1091
+        source /usr/lib/os-release
+        release="$ID"
+    else
+        DIE "Failed to detect the operating system."
+    fi
+
+    echo -e "Detected OS release: ${color_100}${release}${plain}"
+}
+
+ensure_root() {
+    (( EUID == 0 )) || DIE "You must run this script as root."
+}
+
+# [Initialization]
+ensure_root
+ensure_linux
+initialize_proxy
+detect_release
+
+# [Architecture helpers]
 
 arch() {
     case "$(uname -m)" in
@@ -111,82 +420,97 @@ arch() {
         'ppc64le') echo 'ppc64le' ;;
         'riscv64') echo 'riscv64' ;;
         's390x') echo 's390x' ;;
-        *) echo -e "${green}Unsupported CPU architecture! ${plain}" && exit 1 ;;
+        *)
+            LOGE "Unsupported CPU architecture."
+            return 1
+            ;;
     esac
 }
+
+# [Base dependency installation]
 
 install_base() {
     case "${release}" in
     ubuntu | debian | armbian)
-        apt-get update && apt-get install -y -q wget curl tar tzdata unzip
+        apt-get update && apt-get install -y -q curl tar tzdata unzip
         ;;
     centos | almalinux | rocky | ol)
-        yum -y update && yum install -y -q wget curl tar tzdata unzip
+        yum -y update && yum install -y -q curl tar tzdata unzip
         ;;
     fedora | amzn)
-        dnf -y update && dnf install -y -q wget curl tar tzdata unzip
+        dnf -y update && dnf install -y -q curl tar tzdata unzip
         ;;
     arch | manjaro | parch)
-        pacman -Syu && pacman -Syu --noconfirm wget curl tar tzdata unzip
+        pacman -Syu && pacman -Syu --noconfirm curl tar tzdata unzip
         ;;
     opensuse-tumbleweed)
-        zypper refresh && zypper -q install -y wget curl tar timezone unzip
+        zypper refresh && zypper -q install -y curl tar timezone unzip
         ;;
     *)
-        apt-get update && apt install -y -q wget curl tar tzdata unzip
+        apt-get update && apt install -y -q curl tar tzdata unzip
         ;;
     esac
 }
 
 
+# [Interactive helpers]
+
 confirm() {
-    if [[ $# > 1 ]]; then
-        echo && read -p "$1 [Default $2]: " temp
-        if [[ "${temp}" == "" ]]; then
-            temp=$2
+    local answer
+
+    if (( $# > 1 )); then
+        echo && read -r -p "$1 [Default $2]: " answer
+        if [[ -z "$answer" ]]; then
+            answer="$2"
         fi
     else
-        read -p "$1 [y/n]: " temp
+        read -r -p "$1 [y/n]: " answer
     fi
-    if [[ "${temp}" == "y" || "${temp}" == "Y" ]]; then
-        return 0
-    else
-        return 1
-    fi
+
+    [[ "$answer" == "y" || "$answer" == "Y" ]]
 }
 
 confirm_restart() {
-    confirm "Restart Xray Core" "y"
-    if [[ $? == 0 ]]; then
+    if confirm "Restart Xray Core" "y"; then
         restart
-    else
-        show_menu
     fi
 }
 
 before_show_menu() {
-    echo && echo -n -e "${yellow}Press enter to return to the main menu: ${plain}" && read temp
-    show_menu
+    local _unused
+    echo && echo -ne "${yellow}Press enter to return to the main menu: ${plain}" && read -r _unused
 }
 
+# [Xray versioning and installation]
+
 extracting() {
-    if ! unzip -q "$1" -d "$TMP_DIRECTORY"; then
-        echo 'error: Xray extracting failed.'
-        rm -rf "$TMP_DIRECTORY"
-        echo "removed: $TMP_DIRECTORY"
-        exit 1
+    local archive="$1"
+    local target_dir="$2"
+
+    if [[ -z "$archive" || -z "$target_dir" ]]; then
+        LOGE "extracting requires an archive path and a target directory."
+        return 1
     fi
-    LOGN "Extract the Xray package to $TMP_DIRECTORY and prepare it for installation."
+
+    if ! unzip -q "$archive" -d "$target_dir"; then
+        LOGE "Xray extraction failed."
+        rm -rf "$target_dir"
+        LOGN "Removed: $target_dir"
+        return 1
+    fi
+
+    LOGN "Extracted the Xray package to $target_dir and prepared it for installation."
 }
 
 get_current_version() {
-    # Get the current version
+    local current_version=""
+
     if [[ -f '/usr/local/xray/xray-linux' ]]; then
-        cur_ver="$(/usr/local/xray/xray-linux -version | awk 'NR==1 {print $2}')"
-        cur_ver="v${cur_ver#v}"
-    else
-        cur_ver=""
+        current_version="$(/usr/local/xray/xray-linux -version | awk 'NR==1 {print $2}')"
+        current_version="v${current_version#v}"
     fi
+
+    printf '%s\n' "$current_version"
 }
 
 version_gt() {
@@ -195,102 +519,142 @@ version_gt() {
 
 get_latest_version() {
     local tmp_file
+    local latest_version
     tmp_file="$(mktemp)"
 
-    if ! curl -Ls -H "Accept: application/vnd.github.v3+json" -o "$tmp_file" "https://api.github.com/repos/XTLS/Xray-core/releases/latest"; then
-        rm "$tmp_file"
-        echo 'error: Failed to get release list, please check your network.'
-        exit 1
+    if ! curl_txray -4fsSL -H "Accept: application/vnd.github.v3+json" -o "$tmp_file" "https://api.github.com/repos/XTLS/Xray-core/releases/latest"; then
+        rm -f "$tmp_file"
+        LOGE "Failed to get the Xray release list. Please check your network or proxy settings."
+        return 1
     fi
-    tag_version=$(grep '"tag_name":' "$tmp_file" | sed -E 's/.*"([^"]+)".*/\1/')
-    if [[ -z "$tag_version" ]]; then
-        if grep -q "API rate limit exceeded"; then
-            echo "error: github API rate limit exceeded"
+
+    latest_version="$(sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$tmp_file" | head -n 1 | tr -d '\r')"
+    if [[ -z "$latest_version" ]]; then
+        if grep -q "API rate limit exceeded" "$tmp_file"; then
+            LOGE "GitHub API rate limit exceeded."
         else
-            echo "${red}Failed to fetch xray version. Please try again later${plain}"
+            LOGE "Failed to fetch the Xray version. Please try again later."
         fi
-        rm "$tmp_file"
-        exit 1
+        rm -f "$tmp_file"
+        return 1
     fi
-    rm "$tmp_file"
+
+    if [[ ! "$latest_version" =~ ^v?[0-9][A-Za-z0-9._-]*$ ]]; then
+        LOGE "Unexpected Xray release tag received from GitHub: $latest_version"
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    rm -f "$tmp_file"
+    printf '%s\n' "$latest_version"
 }
 
 install_xray() {
-    echo -e "The OS release is: ${blue}$release${plain}"
-    echo -e "arch: ${blue}$(arch)${plain}"
-    install_base
-    TMP_DIRECTORY="$(mktemp -d)"
-    ZIP_FILE="${TMP_DIRECTORY}/Xray-linux-$(arch).zip"
-    XRAY_DIR="/usr/local/xray"
-    JSON_DIR="/etc/xray"
-    cd /usr/local/
+    local arch_name
+    local tmp_directory
+    local zip_file
+    local xray_dir="/usr/local/xray"
+    local json_dir="/etc/xray"
+    local tag_version
+    local url
+    local geoip_status=0
+    local geosite_status=0
 
-    if [ $# == 0 ]; then
-        get_latest_version
-        echo -e "Got xray latest version: ${tag_version}, beginning the installation..."
-        wget -4 -O $ZIP_FILE "https://github.com/XTLS/Xray-core/releases/download/${tag_version}/Xray-linux-$(arch).zip"
-        if [[ $? -ne 0 ]]; then
-            echo -e "${red}Downloading Xray core failed, ensure your server can access GitHub${plain}"
-            rm -rf "$TMP_DIRECTORY"
-            exit 1
+    if ! arch_name="$(arch)"; then
+        return 1
+    fi
+
+    echo -e "Detected OS release: ${blue}$release${plain}"
+    echo -e "arch: ${blue}${arch_name}${plain}"
+    if ! install_base; then
+        LOGE "Failed to install required base dependencies."
+        LOGE "If a proxy is required for apt/yum/dnf/pacman, configure the package manager proxy separately. TXRAY_PROXY only applies to curl downloads."
+        return 1
+    fi
+
+    tmp_directory="$(mktemp -d)"
+    zip_file="${tmp_directory}/Xray-linux-${arch_name}.zip"
+    if ! cd /usr/local/; then
+        LOGE "Failed to enter /usr/local."
+        rm -rf "$tmp_directory"
+        return 1
+    fi
+
+    if (( $# == 0 )); then
+        if ! tag_version="$(get_latest_version)"; then
+            rm -rf "$tmp_directory"
+            LOGE "Installation stopped because the latest Xray version could not be resolved."
+            return 1
         fi
+        url="https://github.com/XTLS/Xray-core/releases/download/${tag_version}/Xray-linux-${arch_name}.zip"
+        LOGN "Latest Xray version: [${tag_version}] Starting installation..."
     else
-        tag_version=$1
-        tag_version_numeric=${tag_version#v}
-        url="https://github.com/XTLS/Xray-core/releases/download/${tag_version}/Xray-linux-$(arch).zip"
-        echo -e "Beginning to install Xray $1"
-        wget -4 -O $ZIP_FILE ${url}
-        if [[ $? -ne 0 ]]; then
-            echo -e "${red}Download of Xray core $1 failed, check if the version exists${plain}"
-            rm -rf "$TMP_DIRECTORY"
-            exit 1
-        fi
+        tag_version="$1"
+        url="https://github.com/XTLS/Xray-core/releases/download/${tag_version}/Xray-linux-${arch_name}.zip"
+        LOGN "Xray selected version: [${tag_version}] Starting installation..."
     fi
 
-    if [[ -e /usr/local/xray/ ]]; then
-        systemctl stop xray
-        rm -rf /usr/local/xray/
+    if ! download_file "$zip_file" "$url"; then
+        LOGE "Downloading Xray Core ${tag_version} failed. Check network access, proxy settings, and whether this version exists."
+        rm -rf "$tmp_directory"
+        return 1
     fi
 
-    # Check if the directory doesn't exist
-    if [[ ! -d "$XRAY_DIR" ]]; then
-        LOGN "Directory $XRAY_DIR does not exist. Creating it..."
-        install -d "$XRAY_DIR" && echo "Directory $XRAY_DIR created successfully."
+    if ! verify_xray_archive "$zip_file" "${url}.dgst"; then
+        rm -rf "$tmp_directory"
+        return 1
+    fi
+
+    if [[ -e "$xray_dir" ]]; then
+        systemctl stop xray >/dev/null 2>&1 || true
+        rm -rf "$xray_dir"
+    fi
+
+    if [[ ! -d "$xray_dir" ]]; then
+        LOGN "Directory $xray_dir does not exist. Creating it..."
+        install -d "$xray_dir" && LOGI "Directory $xray_dir created successfully."
     else
-        LOGN "Directory $XRAY_DIR already exists."
+        LOGN "Directory $xray_dir already exists."
     fi
 
-    if [[ ! -d "$JSON_DIR" ]]; then
-        LOGN "Directory $JSON_DIR does not exist. Creating it..."
-        install -d "$JSON_DIR" && echo "Directory $JSON_DIR created successfully."
+    if [[ ! -d "$json_dir" ]]; then
+        LOGN "Directory $json_dir does not exist. Creating it..."
+        install -d "$json_dir" && LOGI "Directory $json_dir created successfully."
     else
-        LOGN "Directory $JSON_DIR already exists."
+        LOGN "Directory $json_dir already exists."
     fi
 
-    extracting "$ZIP_FILE"
+    if ! extracting "$zip_file" "$tmp_directory"; then
+        return 1
+    fi
 
-    install -m 755 "$TMP_DIRECTORY/xray" $XRAY_DIR/xray-linux
-    install -m 644 "$TMP_DIRECTORY/geoip.dat" $XRAY_DIR
-    install -m 644 "$TMP_DIRECTORY/geosite.dat" $XRAY_DIR
+    if ! install -m 755 "$tmp_directory/xray" "$xray_dir/xray-linux" ||
+       ! install -m 644 "$tmp_directory/geoip.dat" "$xray_dir" ||
+       ! install -m 644 "$tmp_directory/geosite.dat" "$xray_dir"; then
+        LOGE "Failed to install one or more Xray files from the extracted archive."
+        rm -rf "$tmp_directory"
+        return 1
+    fi
 
-    rm -rf "$TMP_DIRECTORY"
-    LOGN "removed: $TMP_DIRECTORY"
+    rm -rf "$tmp_directory"
+    LOGN "Removed: $tmp_directory"
 
-    wget -4 -O /usr/local/xray/geoip_IR.dat "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geoip.dat"
+    LOGI "Downloading Geo files..."
+    download_file "/usr/local/xray/geoip_IR.dat" "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geoip.dat"
     geoip_status=$?
-    wget -4 -O /usr/local/xray/geosite_IR.dat "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geosite.dat"
+    download_file "/usr/local/xray/geosite_IR.dat" "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geosite.dat"
     geosite_status=$?
 
-    # Check if either download failed
-    if [[ $geoip_status -ne 0 || $geosite_status -ne 0 ]]; then
-        LOGW "File geoip.dat and/or geosite.dat failed to download properly. Download them again via the script menu, option 14."
+    if (( geoip_status != 0 || geosite_status != 0 )); then
+        LOGW "One or more geo data files failed to download. You can retry from menu option 14."
     fi
 
-    wget -4 -O /usr/bin/txray "https://raw.githubusercontent.com/tararostami/txray/main/txray.sh"
-    chmod +x /usr/bin/txray
+    if ! download_file "/usr/bin/txray" "https://raw.githubusercontent.com/tararostami/txray/main/txray.sh" || ! chmod +x /usr/bin/txray; then
+        LOGW "Failed to install or update /usr/bin/txray. Xray Core was installed, but the TXray command may be unavailable."
+    fi
 
     if [[ ! -f /etc/xray/config.json ]]; then
-        cat > "${JSON_DIR}/config.json" << EOF
+        cat > "${json_dir}/config.json" << EOF
 {
 //  "log": {
 //    "access": "/var/log/xray/access.log",  # The access log file is located in this path
@@ -313,12 +677,11 @@ install_xray() {
 //  "burstObservatory": {}
 }
 EOF
-        echo "Created config.json at /etc/xray/config.json"
+        LOGN "Created config.json at /etc/xray/config.json"
     else
-        echo "config.json already exists."
+        LOGN "config.json already exists."
     fi
 
-    # Create systemd service file if it doesn't exist
     if [[ ! -f /etc/systemd/system/xray.service ]]; then
         cat > /etc/systemd/system/xray.service << EOF
 [Unit]
@@ -364,117 +727,179 @@ EOF
 }
 EOF
 
-    systemctl daemon-reload
-    systemctl enable xray
-    systemctl start xray
+    if ! systemctl daemon-reload; then
+        LOGE "Failed to reload systemd."
+        return 1
+    fi
 
-    echo -e "${green}xray ${tag_version}${plain} installation finished, it is running now...\n"
+    if ! systemctl enable xray; then
+        LOGE "Failed to enable the Xray service."
+        return 1
+    fi
+
+    if ! systemctl start xray; then
+        LOGE "Failed to start the Xray service."
+        return 1
+    fi
+
+    if ! check_status; then
+        LOGE "Xray service did not report as running after start."
+        return 1
+    fi
+
+    LOGS "Xray ${tag_version} installation completed and the service is running.\n"
     show_usage
+    return 0
 }
 
 install_txray() {
-    install_xray
-    if [[ $? == 0 ]]; then
-        if [[ $# == 0 ]]; then
-            start
-        else
-            start 0
-        fi
+    install_xray || return 1
+
+    if (( $# == 0 )); then
+        start
+    else
+        start 0
     fi
 }
 
 update() {
-    get_current_version
-    get_latest_version
-    if ! version_gt "$tag_version" "$cur_ver"; then
-        LOGN "No new version. The current version of Xray is $cur_ver"
-        exit 0
-    else
-        echo -e "\n${green}New version available: ${bold_text}${green}$tag_version${plain}"
-        confirm "This function will forcefully reinstall the latest version, and the data will not be lost. Do you want to continue?" "y"
-        if [[ $? != 0 ]]; then
-            LOGE "Cancelled"
-            if [[ $# == 0 ]]; then
-                before_show_menu
-            fi
-            return 0
-        fi
-        install_xray
-        if [[ $? == 0 ]]; then
-            LOGI "Update is complete, Xray has automatically restarted "
+    local cur_ver
+    local tag_version
+
+    cur_ver="$(get_current_version)"
+    if ! tag_version="$(get_latest_version)"; then
+        LOGE "Update stopped because the latest Xray version could not be resolved."
+        if (( $# == 0 )); then
             before_show_menu
         fi
+        return 1
     fi
-}
 
-update_menu() {
-    echo -e "${yellow}Updating TXray${plain}"
-    confirm "Do you want to update the TXray script?" "y"
-    if [[ $? != 0 ]]; then
-        LOGE "Cancelled"
-        if [[ $# == 0 ]]; then
+    if ! version_gt "$tag_version" "$cur_ver"; then
+        LOGN "No new version. The current version of Xray is $cur_ver"
+        if (( $# == 0 )); then
             before_show_menu
         fi
         return 0
     fi
 
-    wget -4 -O /usr/bin/txray "https://raw.githubusercontent.com/TaraRostami/txray/main/txray.sh"
-    chmod +x /usr/bin/txray
+    echo -e "\n${green}New version available: ${bold_text}${green}$tag_version${plain}"
+    if ! confirm "This will reinstall the latest version without deleting your existing data. Do you want to continue?" "y"; then
+        LOGE "Cancelled"
+        if (( $# == 0 )); then
+            before_show_menu
+        fi
+        return 0
+    fi
 
-    if [[ $? == 0 ]]; then
-        echo -e "${green}TXray script has been successfully updated.${plain}"
+    if install_xray "$tag_version"; then
+        LOGS "Update completed. Xray has been restarted automatically."
+        if (( $# == 0 )); then
+            before_show_menu
+        fi
+        return 0
+    fi
+
+    return 1
+}
+
+update_menu() {
+    LOGN "Updating TXray"
+    if ! confirm "Do you want to update the TXray script?" "y"; then
+        LOGE "Cancelled"
+        if (( $# == 0 )); then
+            before_show_menu
+        fi
+        return 0
+    fi
+
+    if download_file "/usr/bin/txray" "https://raw.githubusercontent.com/TaraRostami/txray/main/txray.sh" && chmod +x /usr/bin/txray; then
+        LOGS "TXray has been updated successfully."
         before_show_menu
     else
-        echo -e "${red}Failed to update the menu.${plain}"
+        LOGE "Failed to update TXray."
         return 1
     fi
 }
 
 another_version() {
-    version_regex='^[0-9]+\.[0-9]+\.[0-9]+$'
+    local version_regex='^[0-9]+\.[0-9]+\.[0-9]+$'
+    local tag_version
 
     while true; do
-        echo -ne "Enter the Xray version ${yellow}(like 24.11.11)${plain}: "
-        read tag_version
+        echo -ne "Enter the Xray version ${yellow}(like: 24.11.11)${plain} or 0 to go back: "
+        read -r tag_version
 
-        if [ -z "$tag_version" ]; then
-            echo "Xray version cannot be empty. Exiting."
-            exit 1
+        tag_version="$(echo "$tag_version" | xargs)"
+
+        if [[ "$tag_version" == "0" ]]; then
+            return 0
         fi
 
-        tag_version=$(echo "$tag_version" | xargs)
+        if [[ -z "$tag_version" ]]; then
+            LOGW "Xray version cannot be empty."
+            continue
+        fi
+
         if [[ $tag_version =~ $version_regex ]]; then
             break
         else
-            echo "Invalid version format. Please enter a valid version."
+            LOGW "Invalid version format. Please enter a version like: 24.11.11"
         fi
     done
 
-    # Prepend the 'v' to the entered version number
     tag_version="v$tag_version"
 
-    echo "Downloading and installing Xray version $tag_version..."
+    LOGN "Downloading and installing Xray version [${tag_version}]"
 
-    # Call the install function with the version including 'v'
-    install_xray "$tag_version"
-    if [[ $? == 0 ]]; then
-        LOGI "Xray core version $tag_version installed successfully"
-        before_show_menu
+    if install_xray "$tag_version"; then
+        LOGS "Xray Core version $tag_version installed successfully."
+        if (( $# == 0 )); then
+            before_show_menu
+        fi
+        return 0
+    fi
+
+    return 1
+}
+
+remove_script_file_if_requested() {
+    local invoked_path="$0"
+    local script_path
+
+    confirm "Also remove the TXray script file that launched this command?" "n" || return 0
+
+    case "$invoked_path" in
+    bash | sh | -bash | -sh | /dev/fd/* | /proc/* | /bin/bash | /usr/bin/bash | /bin/sh | /usr/bin/sh)
+        LOGW "Skipping script removal because the launch path is not a normal script file: $invoked_path"
+        return 1
+        ;;
+    */*)
+        script_path="$(readlink -f -- "$invoked_path" 2>/dev/null || printf '%s\n' "$invoked_path")"
+        ;;
+    *)
+        script_path="$(command -v -- "$invoked_path" 2>/dev/null || printf '%s\n' "$invoked_path")"
+        script_path="$(readlink -f -- "$script_path" 2>/dev/null || printf '%s\n' "$script_path")"
+        ;;
+    esac
+
+    if [[ ! -f "$script_path" ]]; then
+        LOGW "Skipping script removal because the file was not found: $script_path"
+        return 1
+    fi
+
+    if rm -f -- "$script_path"; then
+        LOGN "Removed script file: $script_path"
+    else
+        LOGW "Failed to remove script file: $script_path"
+        return 1
     fi
 }
 
-# Function to handle the deletion of the script file
-delete_script() {
-    rm "$0" # Remove the script file itself
-    exit 1
-}
+# [Xray service lifecycle]
 
 uninstall() {
-    confirm "Are you sure you want to uninstall the Xray?" "n"
-    if [[ $? != 0 ]]; then
-        if [[ $# == 0 ]]; then
-            show_menu
-        fi
+    if ! confirm "Are you sure you want to uninstall the Xray?" "n"; then
         return 0
     fi
     systemctl stop xray
@@ -488,183 +913,247 @@ uninstall() {
     rm -rf /etc/xray/
     remove_cron
 
-    echo -e "\nUninstalled Successfully.\n"
-    echo "If you need to install again, you can use below command:"
-    echo -e "${green}bash <(curl -Ls https://raw.githubusercontent.com/tararostami/txray/master/txray.sh)${plain}\n"
+    LOGS "Uninstalled successfully.\n"
+    echo "To install again, use this command:"
+    echo -e "${green}bash <(curl -Ls https://raw.githubusercontent.com/tararostami/txray/master/txray.sh)${plain}"
 
-    # Trap the SIGTERM signal
-    trap delete_script SIGTERM
-    delete_script
+    remove_script_file_if_requested
+    exit 0
 }
 
 start() {
-    check_status
-    if [[ $? == 0 ]]; then
-        echo ""
-        LOGI "Xray is running, No need to start again, If you need to restart, please select restart"
+    local result=0
+
+    if check_status; then
+        echo && LOGN "Xray is already running. Use restart if you need to reload it."
     else
-        systemctl start xray
-        sleep 2
-        check_status
-        if [[ $? == 0 ]]; then
-            LOGI "Xray Started Successfully"
+        if ! systemctl start xray; then
+            LOGE "Failed to start the Xray service."
+            result=1
         else
-            LOGE "Xray Failed to start, Probably because it takes longer than two seconds to start, Please check the log information later"
+            sleep 2
+            if check_status; then
+                LOGS "Xray started successfully."
+            else
+                LOGE "Xray did not report as running after two seconds. Check the service logs for details."
+                result=1
+            fi
         fi
     fi
 
-    if [[ $# == 0 ]]; then
+    if (( $# == 0 )); then
         before_show_menu
     fi
+
+    return "$result"
 }
 
 stop() {
+    local status_result
+    local result=0
+
     check_status
-    if [[ $? == 1 ]]; then
-        echo ""
-        LOGI "Xray stopped, No need to stop again!"
+    status_result=$?
+
+    if (( status_result == 1 )); then
+        echo && LOGN "Xray is already stopped."
     else
-        systemctl stop xray
-        sleep 2
-        check_status
-        if [[ $? == 1 ]]; then
-            LOGI "Xray stopped successfully"
+        if ! systemctl stop xray; then
+            LOGE "Failed to stop the Xray service."
+            result=1
         else
-            LOGE "Xray stop failed, Probably because the stop time exceeds two seconds, Please check the log information later"
+            sleep 2
+            check_status
+            status_result=$?
+
+            if (( status_result == 1 )); then
+                LOGS "Xray stopped successfully."
+            else
+                LOGE "Xray did not stop within two seconds. Check the service logs for details."
+                result=1
+            fi
         fi
     fi
 
-    if [[ $# == 0 ]]; then
+    if (( $# == 0 )); then
         before_show_menu
     fi
+
+    return "$result"
 }
 
 restart() {
-    systemctl restart xray
-    sleep 2
-    check_status
-    if [[ $? == 0 ]]; then
-        LOGI "Xray and xray Restarted successfully"
+    local result=0
+
+    if ! systemctl restart xray; then
+        LOGE "Failed to restart the Xray service."
+        result=1
     else
-        LOGE "Xray restart failed, Probably because it takes longer than two seconds to start, Please check the log information later"
+        sleep 2
+        if check_status; then
+            LOGS "Xray restarted successfully."
+        else
+            LOGE "Xray did not report as running after restart. Check the service logs for details."
+            result=1
+        fi
     fi
-    if [[ $# == 0 ]]; then
+
+    if (( $# == 0 )); then
         before_show_menu
     fi
+
+    return "$result"
 }
 
 status() {
+    local result
+
     systemctl status xray -l
-    if [[ $# == 0 ]]; then
+    result=$?
+
+    if (( $# == 0 )); then
         before_show_menu
     fi
+
+    return "$result"
 }
 
 enable() {
-    systemctl enable xray
-    if [[ $? == 0 ]]; then
-        LOGI "Xray Set to boot automatically on startup successfully"
+    local result=0
+
+    if systemctl enable xray; then
+        LOGS "Xray autostart has been enabled."
     else
-        LOGE "Xray Failed to set Autostart"
+        LOGE "Failed to enable Xray autostart."
+        result=1
     fi
 
-    if [[ $# == 0 ]]; then
+    if (( $# == 0 )); then
         before_show_menu
     fi
+
+    return "$result"
 }
 
 disable() {
-    systemctl disable xray
-    if [[ $? == 0 ]]; then
-        LOGI "Xray Autostart Cancelled successfully"
+    local result=0
+
+    if systemctl disable xray; then
+        LOGS "Xray autostart has been disabled."
     else
-        LOGE "Xray Failed to cancel autostart"
+        LOGE "Failed to disable Xray autostart."
+        result=1
     fi
 
-    if [[ $# == 0 ]]; then
+    if (( $# == 0 )); then
         before_show_menu
     fi
+
+    return "$result"
 }
 
 show_log() {
-    echo -e "${green}\t1.${plain} Debug Log"
-    echo -e "${green}\t2.${plain} Clear All logs"
-    echo -e "${green}\t0.${plain} Back to Main Menu"
-    read -p "Choose an option: " choice
+    local choice
 
-    case "$choice" in
-    0)
-        show_menu
-        ;;
-    1)
-        journalctl -u xray -e --no-pager -f -p debug
-        if [[ $# == 0 ]]; then
-            before_show_menu
-        fi
-        ;;
-    2)
-        sudo journalctl --rotate
-        sudo journalctl --vacuum-time=1s
-        echo "All Logs cleared."
-        restart
-        ;;
-    *)
-        echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
-        show_log
-        ;;
-    esac
+    while true; do
+        echo -e "${green}\t1.${plain} Debug Log"
+        echo -e "${green}\t2.${plain} Clear all logs"
+        echo -e "${green}\t0.${plain} Back to Main Menu"
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+        0)
+            return 0
+            ;;
+        1)
+            journalctl -u xray -e --no-pager -f -p debug
+            if (( $# == 0 )); then
+                before_show_menu
+            fi
+            return 0
+            ;;
+        2)
+            journalctl --rotate
+            journalctl --vacuum-time=1s
+            LOGS "All logs have been cleared."
+            restart 0
+            if (( $# == 0 )); then
+                before_show_menu
+            fi
+            return 0
+            ;;
+        *)
+            LOGE "Invalid option. Please select a valid number."
+            ;;
+        esac
+    done
 }
 
+# [BBR management]
+
 bbr_menu() {
-    echo -e "${green}\t1.${plain} Enable BBR"
-    echo -e "${green}\t2.${plain} Disable BBR"
-    echo -e "${green}\t0.${plain} Back to Main Menu"
-    read -p "Choose an option: " choice
-    case "$choice" in
-    0)
-        show_menu
-        ;;
-    1)
-        enable_bbr
-        bbr_menu
-        ;;
-    2)
-        disable_bbr
-        bbr_menu
-        ;;
-    *) 
-        echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
-        bbr_menu
-        ;;
-    esac
+    local choice
+
+    while true; do
+        echo -e "${green}\t1.${plain} Enable BBR"
+        echo -e "${green}\t2.${plain} Disable BBR"
+        echo -e "${green}\t0.${plain} Back to Main Menu"
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+        0)
+            return 0
+            ;;
+        1)
+            enable_bbr
+            ;;
+        2)
+            disable_bbr
+            ;;
+        *)
+            LOGE "Invalid option. Please select a valid number.\n"
+            ;;
+        esac
+    done
 }
 
 disable_bbr() {
+    local bbr_conf="/etc/sysctl.d/99-txray-bbr.conf"
 
-    if ! grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf || ! grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf; then
-        echo -e "${yellow}BBR is not currently enabled.${plain}"
+    if [[ ! -f "$bbr_conf" ]] && ! grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf 2>/dev/null; then
+        LOGW "BBR is not currently enabled by TXray."
         before_show_menu
+        return 0
     fi
 
-    # Replace BBR with CUBIC configurations
-    sed -i 's/net.core.default_qdisc=fq/net.core.default_qdisc=pfifo_fast/' /etc/sysctl.conf
-    sed -i 's/net.ipv4.tcp_congestion_control=bbr/net.ipv4.tcp_congestion_control=cubic/' /etc/sysctl.conf
+    rm -f "$bbr_conf"
 
-    # Apply changes
-    sysctl -p
+    if grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf 2>/dev/null; then
+        sed -i 's/^net.core.default_qdisc=fq/net.core.default_qdisc=pfifo_fast/' /etc/sysctl.conf
+    fi
 
-    # Verify that BBR is replaced with CUBIC
-    if [[ $(sysctl net.ipv4.tcp_congestion_control | awk '{print $3}') == "cubic" ]]; then
-        echo -e "${green}BBR has been replaced with CUBIC successfully.${plain}"
+    if grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf 2>/dev/null; then
+        sed -i 's/^net.ipv4.tcp_congestion_control=bbr/net.ipv4.tcp_congestion_control=cubic/' /etc/sysctl.conf
+    fi
+
+    sysctl --system >/dev/null 2>&1 || sysctl -p
+
+    if [[ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" == "cubic" ]]; then
+        LOGS "BBR has been disabled and CUBIC is now active."
     else
-        echo -e "${red}Failed to replace BBR with CUBIC. Please check your system configuration.${plain}"
+        LOGN "BBR configuration was removed. A reboot may be required for the new congestion control setting to take effect."
     fi
+
+    return 0
 }
 
 enable_bbr() {
-    if grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf && grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf; then
-        echo -e "${green}BBR is already enabled!${plain}"
+    local bbr_conf="/etc/sysctl.d/99-txray-bbr.conf"
+
+    if [[ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" == "bbr" ]]; then
+        LOGN "BBR is already active."
         before_show_menu
+        return 0
     fi
 
     # Check the OS and install necessary packages
@@ -682,80 +1171,89 @@ enable_bbr() {
         pacman -Sy --noconfirm ca-certificates
         ;;
     *)
-        echo -e "${red}Unsupported operating system. Please check the script and install the necessary packages manually.${plain}\n"
-        exit 1
+        LOGE "Unsupported operating system. Please install the required packages manually."
+        return 1
         ;;
-    esac
+    esac || {
+        LOGE "Failed to install required packages for BBR."
+        return 1
+    }
 
-    # Enable BBR
-    echo "net.core.default_qdisc=fq" | tee -a /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" | tee -a /etc/sysctl.conf
+    cat > "$bbr_conf" << EOF
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
 
-    # Apply changes
-    sysctl -p
+    sysctl --system >/dev/null 2>&1 || sysctl -p "$bbr_conf"
 
-    # Verify that BBR is enabled
-    if [[ $(sysctl net.ipv4.tcp_congestion_control | awk '{print $3}') == "bbr" ]]; then
-        echo -e "${green}BBR has been enabled successfully.${plain}"
-    else
-        echo -e "${red}Failed to enable BBR. Please check your system configuration.${plain}"
+    if [[ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" == "bbr" ]]; then
+        LOGS "BBR has been enabled successfully."
+        return 0
     fi
+
+    LOGE "Failed to enable BBR. Please check your system configuration."
+    return 1
 }
+
+# [Status helpers]
 
 # 0: running, 1: not running, 2: not installed
 check_status() {
     if [[ ! -f /etc/systemd/system/xray.service ]]; then
         return 2
     fi
-    temp=$(systemctl status xray | grep Active | awk '{print $3}' | cut -d "(" -f2 | cut -d ")" -f1)
-    if [[ "${temp}" == "running" ]]; then
+
+    if systemctl is-active --quiet xray; then
         return 0
-    else
-        return 1
     fi
+
+    return 1
 }
 
 check_enabled() {
-    temp=$(systemctl is-enabled xray)
-    if [[ "${temp}" == "enabled" ]]; then
-        return 0
-    else
-        return 1
-    fi
+    systemctl is-enabled --quiet xray
 }
 
 check_uninstall() {
+    local status_result
+
     check_status
-    if [[ $? != 2 ]]; then
-        echo ""
-        LOGE "Xray Core installed, Please do not reinstall"
-        if [[ $# == 0 ]]; then
+    status_result=$?
+
+    if (( status_result != 2 )); then
+        echo && LOGE "Xray Core is already installed. Please uninstall it before reinstalling."
+        if (( $# == 0 )); then
             before_show_menu
         fi
         return 1
-    else
-        return 0
     fi
+
+    return 0
 }
 
 check_install() {
+    local status_result
+
     check_status
-    if [[ $? == 2 ]]; then
-        echo ""
-        LOGE "Please install the Xray Core first"
-        if [[ $# == 0 ]]; then
+    status_result=$?
+
+    if (( status_result == 2 )); then
+        echo && LOGE "Please install Xray Core first."
+        if (( $# == 0 )); then
             before_show_menu
         fi
         return 1
-    else
-        return 0
     fi
+
+    return 0
 }
 
 show_status() {
+    local status_result
+
     check_status
     status_result=$?
-    if [[ $status_result -ne 2 ]]; then
+    if (( status_result != 2 )); then
         show_version_status
     fi
     case $status_result in
@@ -772,86 +1270,116 @@ show_status() {
         ;;
     esac
     check_cron
+    show_proxy_status
 }
 
 show_version_status() {
-    get_current_version
+    local cur_ver
+
+    cur_ver="$(get_current_version)"
     echo -e "Current Xray Core Version: ${bold_text}${green}$cur_ver${plain}"
 }
 
 show_enable_status() {
-    check_enabled
-    if [[ $? == 0 ]]; then
-        echo -e "Start automatically: ${bold_text}${green}Active${plain}"
+    if check_enabled; then
+        echo -e "Autostart: ${bold_text}${green}Active${plain}"
     else
-        echo -e "Start automatically: ${red}Disable${plain}"
+        echo -e "Autostart: ${red}Disabled${plain}"
     fi
 }
 
+# [Geo data management]
+
 update_geo() {
-    echo -e "${green}\t1.${plain} Loyalsoldier (geoip.dat, geosite.dat)"
-    echo -e "${green}\t2.${plain} chocolate4u (geoip_IR.dat, geosite_IR.dat)"
-    echo -e "${green}\t3.${plain} vuong2023 (geoip_VN.dat, geosite_VN.dat)"
-    echo -e "${green}\t0.${plain} Back to Main Menu"
-    read -p "Choose an option: " choice
+    local choice
 
-    cd /usr/local/xray
+    while true; do
+        echo -e "${green}\t1.${plain} Loyalsoldier (geoip.dat, geosite.dat)"
+        echo -e "${green}\t2.${plain} Chocolate4U (geoip_IR.dat, geosite_IR.dat)"
+        echo -e "${green}\t3.${plain} vuong2023 (geoip_VN.dat, geosite_VN.dat)"
+        echo -e "${green}\t0.${plain} Back to Main Menu"
+        read -r -p "Choose an option: " choice
 
-    case "$choice" in
-    0)
-        show_menu
-        ;;
-    1)
-        systemctl stop xray
-        rm -f geoip.dat geosite.dat
-        wget -N "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
-        wget -N "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
-        echo -e "${green}Loyalsoldier datasets have been updated successfully!${plain}"
-        restart
-        ;;
-    2)
-        systemctl stop xray
-        rm -f geoip_IR.dat geosite_IR.dat
-        wget -O geoip_IR.dat -N "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geoip.dat"
-        wget -O geosite_IR.dat -N "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geosite.dat"
-        echo -e "${green}chocolate4u datasets have been updated successfully!${plain}"
-        restart
-        ;;
-    3)
-        systemctl stop xray
-        rm -f geoip_VN.dat geosite_VN.dat
-        wget -O geoip_VN.dat -N "https://github.com/vuong2023/vn-v2ray-rules/releases/latest/download/geoip.dat"
-        wget -O geosite_VN.dat -N "https://github.com/vuong2023/vn-v2ray-rules/releases/latest/download/geosite.dat"
-        echo -e "${green}vuong2023 datasets have been updated successfully!${plain}"
-        restart
-        ;;
-    *)
-        echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
-        update_geo
-        ;;
-    esac
-    before_show_menu
+        case "$choice" in
+        0)
+            return 0
+            ;;
+        1)
+            if ! cd /usr/local/xray; then
+                LOGE "Failed to enter /usr/local/xray."
+                before_show_menu
+                return 1
+            fi
+            systemctl stop xray >/dev/null 2>&1 || true
+            rm -f geoip.dat geosite.dat
+            download_file_if_modified "geoip.dat" "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" || LOGW "Failed to update geoip.dat."
+            download_file_if_modified "geosite.dat" "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" || LOGW "Failed to update geosite.dat."
+            LOGS "Loyalsoldier datasets have been updated."
+            restart 0
+            before_show_menu
+            return 0
+            ;;
+        2)
+            if ! cd /usr/local/xray; then
+                LOGE "Failed to enter /usr/local/xray."
+                before_show_menu
+                return 1
+            fi
+            systemctl stop xray >/dev/null 2>&1 || true
+            rm -f geoip_IR.dat geosite_IR.dat
+            download_file_if_modified "geoip_IR.dat" "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geoip.dat" || LOGW "Failed to update geoip_IR.dat."
+            download_file_if_modified "geosite_IR.dat" "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geosite.dat" || LOGW "Failed to update geosite_IR.dat."
+            LOGS "Chocolate4U datasets have been updated."
+            restart 0
+            before_show_menu
+            return 0
+            ;;
+        3)
+            if ! cd /usr/local/xray; then
+                LOGE "Failed to enter /usr/local/xray."
+                before_show_menu
+                return 1
+            fi
+            systemctl stop xray >/dev/null 2>&1 || true
+            rm -f geoip_VN.dat geosite_VN.dat
+            download_file_if_modified "geoip_VN.dat" "https://github.com/vuong2023/vn-v2ray-rules/releases/latest/download/geoip.dat" || LOGW "Failed to update geoip_VN.dat."
+            download_file_if_modified "geosite_VN.dat" "https://github.com/vuong2023/vn-v2ray-rules/releases/latest/download/geosite.dat" || LOGW "Failed to update geosite_VN.dat."
+            LOGS "vuong2023 datasets have been updated."
+            restart 0
+            before_show_menu
+            return 0
+            ;;
+        *)
+            LOGE "Invalid option. Please select a valid number.\n"
+            ;;
+        esac
+    done
 }
+
+# [CLI usage]
 
 show_usage() {
-    echo -e "${bold_text}${italic_text}${white}TXray${plain} control menu usages: "
-    echo "────────────────────────────────────────────────"
-    echo -e "SUBCOMMANDS:"
-    echo -e "txray              - Admin Management Script"
-    echo -e "txray ${color_100}start${plain}        - Start"
-    echo -e "txray ${color_100}stop${plain}         - Stop"
-    echo -e "txray ${color_100}restart${plain}      - Restart"
-    echo -e "txray ${color_100}status${plain}       - Current Status"
-    echo -e "txray ${color_100}settings${plain}     - Current Settings"
-    echo -e "txray ${color_100}enable${plain}       - Enable Autostart on OS Startup"
-    echo -e "txray ${color_100}disable${plain}      - Disable Autostart on OS Startup"
-    echo -e "txray ${color_100}log${plain}          - Check logs"
-    echo -e "txray ${color_100}update${plain}       - Update"
-    echo -e "txray ${color_100}another${plain}      - Another version"
-    echo -e "txray ${color_100}install${plain}      - Install"
-    echo -e "txray ${color_100}uninstall${plain}    - Uninstall"
-    echo "────────────────────────────────────────────────"
+    echo -e "${bold_text}${italic_text}${white}TXray${plain} command usage: "
+    echo -e "────────────────────────────────────────────────"
+    echo -e "${color_100}txray${plain}              - Administration menu"
+    echo -e "${color_100}txray start${plain}        - Start"
+    echo -e "${color_100}txray stop${plain}         - Stop"
+    echo -e "${color_100}txray restart${plain}      - Restart"
+    echo -e "${color_100}txray status${plain}       - Current status"
+    echo -e "${color_100}txray enable${plain}       - Enable autostart on OS startup"
+    echo -e "${color_100}txray disable${plain}      - Disable autostart on OS startup"
+    echo -e "${color_100}txray log${plain}          - View logs"
+    echo -e "${color_100}txray update${plain}       - Update"
+    echo -e "${color_100}txray another${plain}      - Install a specific version"
+    echo -e "${color_100}txray install${plain}      - Install"
+    echo -e "${color_100}txray uninstall${plain}    - Uninstall"
+    echo -e "────────────────────────────────────────────────"
+    echo -e "Optional Proxy:"
+    echo -e "${color_100}TXRAY_PROXY=socks5h://127.0.0.1:1080 txray install${plain}"
+    echo -e "────────────────────────────────────────────────"
 }
+
+# [WARP / wgcf management]
 
 # Function to detect CPU architecture
 arch_wgcf() {
@@ -867,121 +1395,142 @@ arch_wgcf() {
         mips) echo 'mips_softfloat' ;;
         mipsle) echo 'mipsle_softfloat' ;;
         s390x) echo 's390x' ;;
-        *) echo "Unsupported architecture" && exit 1 ;;
+        *)
+            LOGE "Unsupported WARP architecture."
+            return 1
+            ;;
     esac
 }
 
-get_ip_v4v6() {
-    # Get IPv4 and IPv6 addresses from ip.sb
-    v4=$(curl -s4m6 ip.sb -k)
-    v6=$(curl -s6m6 ip.sb -k)
-    # Alternative sources for IP addresses (commented out)
-    # v6=$(curl -s6m6 api64.ipify.org -k)
-    # v4=$(curl -s4m6 api64.ipify.org -k)
-}
+calculate_warp_mtu() {
+    local v4
+    local v6
+    local ping_cmd
+    local ip_primary
+    local ip_secondary
+    local mtu_probe=1500
+    local mtu_step=10
+    local calculated_mtu
 
-mtu_warp() {
-    get_ip_v4v6
-    echo "Starting automatic MTU optimization for WARP network to improve network throughput!"
-    MTUy=1500  # Initial MTU value (default for Ethernet)
-    MTUc=10    # Increment for MTU testing
+    v4="$(curl_txray -s4m6 ip.sb -k)"
+    v6="$(curl_txray -s6m6 ip.sb -k)"
 
-    # Check if the system is using IPv6 but not IPv4
-    if [[ -n $v6 && -z $v4 ]]; then
-        ping='ping6'
-        IP1='2606:4700:4700::1111'
-        IP2='2001:4860:4860::8888'
+    if [[ -n "$v6" && -z "$v4" ]]; then
+        ping_cmd='ping6'
+        ip_primary='2606:4700:4700::1111'
+        ip_secondary='2001:4860:4860::8888'
     else
-        ping='ping'
-        IP1='1.1.1.1'
-        IP2='8.8.8.8'
+        ping_cmd='ping'
+        ip_primary='1.1.1.1'
+        ip_secondary='8.8.8.8'
     fi
 
-    # Loop to find the optimal MTU value
     while true; do
-        if ${ping} -c1 -W1 -s$((${MTUy} - 28)) -Mdo ${IP1} >/dev/null 2>&1 || ${ping} -c1 -W1 -s$((${MTUy} - 28)) -Mdo ${IP2} >/dev/null 2>&1; then
-            MTUc=1  # If ping succeeds, increase MTU by 1
-            MTUy=$((${MTUy} + ${MTUc}))
+        if "$ping_cmd" -c1 -W1 -s$((mtu_probe - 28)) -Mdo "$ip_primary" >/dev/null 2>&1 || "$ping_cmd" -c1 -W1 -s$((mtu_probe - 28)) -Mdo "$ip_secondary" >/dev/null 2>&1; then
+            mtu_step=1
+            mtu_probe=$((mtu_probe + mtu_step))
         else
-            MTUy=$((${MTUy} - ${MTUc}))  # If ping fails, decrease MTU by 1
-            [[ ${MTUc} = 1 ]] && break  # Stop loop if MTU size is stable
+            mtu_probe=$((mtu_probe - mtu_step))
+            (( mtu_step == 1 )) && break
         fi
 
-        # If MTU value is less than or equal to 1360, set it to 1360 and exit
-        [[ ${MTUy} -le 1360 ]] && MTUy='1360' && break
+        (( mtu_probe <= 1360 )) && mtu_probe=1360 && break
     done
 
-    # Adjust the MTU value by subtracting 80 to account for headers
-    MTU=$((${MTUy} - 80))
-
-    # Print the final MTU value in green
-    LOGN "Optimal MTU value for network throughput = $MTU has been set."
+    calculated_mtu=$((mtu_probe - 80))
+    printf '%s\n' "$calculated_mtu"
 }
 
 mtu_transfer() {
-    backup_mtu=$(grep -Po '(?<=^MTU = )\d+' "$wgcf_dir/backup-profile.conf")
-    if [[ -z $backup_mtu ]]; then
+    local backup_mtu
+
+    backup_mtu="$(grep -Po '(?<=^MTU = )\d+' "$wgcf_dir/backup-profile.conf" 2>/dev/null)"
+    if [[ -z "$backup_mtu" ]]; then
         backup_mtu=1280
     fi
+
+    if [[ ! -f "$wgcf_dir/$wgcf_profile" ]]; then
+        LOGE "WARP profile was not found: $wgcf_dir/$wgcf_profile"
+        return 1
+    fi
+
     sed -i "s/^MTU = .*/MTU = $backup_mtu/" "$wgcf_dir/$wgcf_profile"
 }
 
 get_latest_wgcf() {
     local tmp_file
+    local latest_version
     tmp_file="$(mktemp)"
 
-    if ! curl -Ls -H "Accept: application/vnd.github.v3+json" -o "$tmp_file" "https://api.github.com/repos/ViRb3/wgcf/releases/latest"; then
-        rm "$tmp_file"
-        LOGE "Failed to get release list, please check your network."
-        exit 1
+    if ! curl_txray -4fsSL -H "Accept: application/vnd.github.v3+json" -o "$tmp_file" "https://api.github.com/repos/ViRb3/wgcf/releases/latest"; then
+        rm -f "$tmp_file"
+        LOGE "Failed to get the wgcf release list. Please check your network or proxy settings."
+        return 1
     fi
-    tag_version=$(grep '"tag_name":' "$tmp_file" | sed -E 's/.*"([^"]+)".*/\1/')
-    if [[ -z "$tag_version" ]]; then
+
+    latest_version="$(sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$tmp_file" | head -n 1 | tr -d '\r')"
+    if [[ -z "$latest_version" ]]; then
         if grep -q "API rate limit exceeded" "$tmp_file"; then
-            LOGE "github API rate limit exceeded"
+            LOGE "GitHub API rate limit exceeded."
         else
-            LOGE "Failed to fetch xray version. Please try again later"
+            LOGE "Failed to fetch the wgcf version. Please try again later."
         fi
-        rm "$tmp_file"
-        exit 1
+        rm -f "$tmp_file"
+        return 1
     fi
-    rm "$tmp_file"
+
+    if [[ ! "$latest_version" =~ ^v?[0-9][A-Za-z0-9._-]*$ ]]; then
+        LOGE "Unexpected wgcf release tag received from GitHub: $latest_version"
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    rm -f "$tmp_file"
+    printf '%s\n' "$latest_version"
 }
 
 check_absence_wgcf() {
-    if [ -f "$wgcf_bin" ]; then
-        LOGI "Warp is already installed."
-        exit 0
+    if [[ -f "$wgcf_bin" ]]; then
+        LOGN "WARP is already installed."
+        return 1
     fi
+
+    return 0
 }
 
 check_existence_wgcf() {
-    if [ ! -f "$wgcf_bin" ] || [ ! -f "$wgcf_dir/$wgcf_profile" ]; then
-        LOGW "Warp is not installed, Please install Warp first."
-        wgcf_menu
+    if [[ ! -f "$wgcf_bin" || ! -f "$wgcf_dir/$wgcf_profile" ]]; then
+        LOGW "WARP is not installed. Please install WARP first."
         return 1
-    else
-        return 0
     fi
+
+    return 0
 }
 
 wgcf_get_configuration() {
-    private_key=$(grep 'PrivateKey' "$wgcf_dir/$wgcf_profile" | cut -d' ' -f3)
-    address=$(grep 'Address' "$wgcf_dir/$wgcf_profile" | cut -d' ' -f3- | awk -F', ' '{for(i=1;i<=NF;i++) if($i ~ /:/) print $i}')
-    mtu=$(grep 'MTU' "$wgcf_dir/$wgcf_profile" | cut -d' ' -f3)
+    local private_key
+    local address
+    local mtu
+
+    private_key="$(grep 'PrivateKey' "$wgcf_dir/$wgcf_profile" | cut -d' ' -f3)"
+    address="$(grep 'Address' "$wgcf_dir/$wgcf_profile" | cut -d' ' -f3- | awk -F', ' '{for(i=1;i<=NF;i++) if($i ~ /:/) print $i}')"
+    mtu="$(grep 'MTU' "$wgcf_dir/$wgcf_profile" | cut -d' ' -f3)"
+
+    printf '%s\n%s\n%s\n' "$private_key" "$address" "$mtu"
 }
 
 wgcf_status() {
     local cfg="$wgcf_dir/$wgcf_account"
     if ! [ -f "$cfg" ]; then
-        LOGW "Account file not found, Please reinstall warp."
+        LOGW "Account file not found. Please reinstall WARP."
         return 1
     fi
 
     local raw rc cleaned account_type account_type_lc plan_line
+    local private_key address mtu
     raw="$($wgcf_bin --config "$cfg" status 2>&1)"
     rc=$?
-    [[ $rc -eq 0 ]] || { echo -e "$raw"; return $rc; }
+    (( rc == 0 )) || { echo -e "$raw"; return "$rc"; }
 
     cleaned="$(printf '%s\n' "$raw" | tail -n +3 | sed '/=/d')"
 
@@ -989,9 +1538,9 @@ wgcf_status() {
     account_type_lc="$(printf '%s' "$account_type" | tr '[:upper:]' '[:lower:]')"
 
     if [[ "$account_type_lc" == "limited" || "$account_type_lc" == "warp+" || "$account_type_lc" == "plus" ]]; then
-        plan_line="${orange}You are using Warp+${plain}"
+        plan_line="${orange}You are using WARP+${plain}"
     else
-        plan_line="You are using free Warp"
+        plan_line="You are using free WARP"
     fi
 
     echo -e "───────────────────────────────────────────────────────────"
@@ -1016,8 +1565,13 @@ wgcf_status() {
       END { print "" }
     '
 
-    wgcf_get_configuration
-    echo -e "${bold_text}${italic_text}${white}Installed Warp Details:${plain}"
+    {
+        IFS= read -r private_key
+        IFS= read -r address
+        IFS= read -r mtu
+    } < <(wgcf_get_configuration)
+
+    echo -e "${bold_text}${italic_text}${white}Installed WARP Details:${plain}"
     echo -e "${orange}PrivateKey:${plain} $private_key"
     echo -e "${orange}Address:${plain} $address"
     echo -e "${orange}MTU:${plain} $mtu"
@@ -1025,134 +1579,227 @@ wgcf_status() {
 }
 
 register_warp() {
-    echo "Registering Warp account..."
-    attempts=0
-    max_attempts=5
-    # Loop for registration attempts
-    until [[ -e "$wgcf_account" || $attempts -ge $max_attempts ]]; do
-        wgcf_cmd=$(echo | $wgcf_bin register 2>&1)
+    local attempts=0
+    local max_attempts=5
+    local wgcf_cmd
+
+    LOGI "Registering WARP account..."
+
+    until [[ -e "$wgcf_account" ]] || (( attempts >= max_attempts )); do
+        wgcf_cmd="$(echo | "$wgcf_bin" register 2>&1)"
         if echo "$wgcf_cmd" | grep -q "Successfully created"; then
-            LOGN "Warp has been successfully created."
+            LOGN "WARP account has been created successfully."
             return 0
-        else
-            attempts=$((attempts + 1))
-            if [[ $attempts -lt $max_attempts ]]; then
-                echo "Attempt $attempts failed. Retrying... (max attempts: $max_attempts)"
-                LOGW "During the application of warp ordinary account, you may be prompted multiple times: 429 Too Many Requests, please wait few seconds" && sleep 1
-                echo | $wgcf_bin register --accept-tos
-            fi
+        fi
+
+        ((attempts++))
+        if (( attempts < max_attempts )); then
+            LOGW "Attempt $attempts failed. Retrying... (max attempts: $max_attempts)"
+            LOGW "During WARP account registration, you may see repeated 429 Too Many Requests responses. Retrying shortly."
+            sleep 1
+            echo | "$wgcf_bin" register --accept-tos >/dev/null 2>&1 || true
         fi
     done
+
     return 1
 }
 
-# Function to install Warp
+# Function to install WARP
 install_warp() {
-    echo -e "arch: ${color_100}$(arch_wgcf)${plain}"
-    LOGI "Installing Warp..."
-    cd /root/
+    local wgcf_arch
+    local temp_dir
+    local wgcf_file
+    local tag_version
+    local wgcf_cmd
+    local warp_mtu
+    local previous_dir
+
+    if ! wgcf_arch="$(arch_wgcf)"; then
+        return 1
+    fi
+
+    echo -e "arch: ${color_100}${wgcf_arch}${plain}"
+
+    LOGI "Installing WARP..."
+
+    previous_dir="$(pwd -P 2>/dev/null || printf '/')"
     temp_dir="$(mktemp -d)"
     wgcf_file="${temp_dir}/wgcf"
 
-    get_latest_wgcf
-    if ! wget -4 -O "$wgcf_file" "https://github.com/ViRb3/wgcf/releases/download/${tag_version}/wgcf_${tag_version#v}_linux_$(arch_wgcf)"; then
-        LOGE "Downloading Warp failed, ensure your server can access GitHub"
+    cd "$temp_dir" || {
+        LOGE "Failed to enter temporary WARP working directory."
         rm -rf "$temp_dir"
-        exit 1
+        return 1
+    }
+
+    if ! tag_version="$(get_latest_wgcf)"; then
+        cd "$previous_dir" >/dev/null 2>&1 || cd / >/dev/null 2>&1 || true
+        rm -rf "$temp_dir"
+        LOGE "WARP installation stopped because the latest wgcf version could not be resolved."
+        return 1
     fi
 
-    install -D "$wgcf_file" "$wgcf_bin"
-    chmod +x "$wgcf_bin"
+    if ! download_file "$wgcf_file" "https://github.com/ViRb3/wgcf/releases/download/${tag_version}/wgcf_${tag_version#v}_linux_${wgcf_arch}"; then
+        LOGE "Downloading WARP failed. Ensure this server can access GitHub or check proxy settings."
+        cd "$previous_dir" >/dev/null 2>&1 || cd / >/dev/null 2>&1 || true
+        rm -rf "$temp_dir"
+        return 1
+    fi
 
-    if ! register_warp; then
-        LOGE "Failed to register Warp account after $max_attempts attempts, Try again later."
+    if ! install -D "$wgcf_file" "$wgcf_bin" || ! chmod +x "$wgcf_bin"; then
+        LOGE "Failed to install the wgcf binary."
+        cd "$previous_dir" >/dev/null 2>&1 || cd / >/dev/null 2>&1 || true
         rm -rf "$temp_dir"
         rm -f "$wgcf_bin"
-        exit 1
+        return 1
     fi
 
-    echo "Generating Warp profile..."
-    wgcf_cmd=$("$wgcf_bin" generate 2>&1)
-    if echo "$wgcf_cmd" | grep -q "Successfully generated"; then
-        LOGN "Successfully generated Warp profile"
-    else
+    if ! register_warp; then
+        LOGE "Failed to register the WARP account after repeated attempts. Please try again later."
+        cd "$previous_dir" >/dev/null 2>&1 || cd / >/dev/null 2>&1 || true
         rm -rf "$temp_dir"
-        rm -f "$wgcf_bin" "$wgcf_account"
-        LOGW "Failed, try again later."
-        exit 1
+        rm -f "$wgcf_bin"
+        return 1
     fi
-    mtu_warp
-    sed -i "s/MTU.*/MTU = $MTU/g" "$wgcf_profile"
-    install -D "$wgcf_account" "$wgcf_dir/backup-account.toml"
-    install -D "$wgcf_profile" "$wgcf_dir/backup-profile.conf"
-    mv -f "$wgcf_profile" "$wgcf_dir" >/dev/null 2>&1
-    mv -f "$wgcf_account" "$wgcf_dir" >/dev/null 2>&1
-    wgcf_status
-    LOGI "Warp installed successfully.\n"
+
+    LOGI "Generating WARP profile..."
+    wgcf_cmd="$("$wgcf_bin" generate 2>&1)"
+    if echo "$wgcf_cmd" | grep -q "Successfully generated"; then
+        LOGN "WARP profile generated successfully."
+    else
+        rm -f "$wgcf_bin" "$wgcf_account"
+        cd "$previous_dir" >/dev/null 2>&1 || cd / >/dev/null 2>&1 || true
+        rm -rf "$temp_dir"
+        LOGW "Operation failed. Please try again later."
+        return 1
+    fi
+
+    LOGI "Starting automatic MTU optimization for WARP network throughput."
+    warp_mtu="$(calculate_warp_mtu)"
+    if [[ -z "$warp_mtu" || ! "$warp_mtu" =~ ^[0-9]+$ ]]; then
+        LOGE "Failed to calculate a valid WARP MTU value."
+        cd "$previous_dir" >/dev/null 2>&1 || cd / >/dev/null 2>&1 || true
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    LOGN "Optimal WARP MTU value has been set to $warp_mtu."
+    if ! sed -i "s/MTU.*/MTU = $warp_mtu/g" "$wgcf_profile"; then
+        LOGE "Failed to update the WARP profile MTU value."
+        cd "$previous_dir" >/dev/null 2>&1 || cd / >/dev/null 2>&1 || true
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    if ! install -D "$wgcf_account" "$wgcf_dir/backup-account.toml" ||
+       ! install -D "$wgcf_profile" "$wgcf_dir/backup-profile.conf" ||
+       ! mv -f "$wgcf_profile" "$wgcf_dir" >/dev/null 2>&1 ||
+       ! mv -f "$wgcf_account" "$wgcf_dir" >/dev/null 2>&1; then
+        LOGE "Failed to store WARP configuration files."
+        cd "$previous_dir" >/dev/null 2>&1 || cd / >/dev/null 2>&1 || true
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    cd "$previous_dir" >/dev/null 2>&1 || cd / >/dev/null 2>&1 || true
     rm -rf "$temp_dir"
+    wgcf_status
+    LOGS "WARP installed successfully.\n"
+    return 0
 }
 
 get_back() {
-    echo "Registration failed. Trying to get back to the free account."
-    cp "$wgcf_dir/backup-account.toml" "$wgcf_dir/$wgcf_account"
+    local wgcf_cmd
 
-    wgcf_cmd=$($wgcf_bin --config "$wgcf_dir/$wgcf_account" generate 2>&1)
-    if [[ $? -eq 0 ]]; then
+    LOGW "Registration failed. Restoring the free WARP account."
+    if ! cp "$wgcf_dir/backup-account.toml" "$wgcf_dir/$wgcf_account"; then
+        LOGE "Failed to restore the backup WARP account."
+        return 1
+    fi
+
+    if wgcf_cmd="$("$wgcf_bin" --config "$wgcf_dir/$wgcf_account" generate 2>&1)"; then
         mtu_transfer
-        echo "Return to free account successfully completed."
+        LOGS "Returned to the free WARP account successfully."
         upgrade_warp_plus
     else
-        echo "Failed to switch back to free account, Please reinstall warp"
-        exit 1
+        echo "$wgcf_cmd"
+        LOGE "Failed to switch back to the free account. Please reinstall WARP."
+        return 1
     fi
 }
 
-# Function to upgrade to Warp+
+# Function to upgrade to WARP+
 upgrade_warp_plus() {
-    plus_status=$($wgcf_bin --config "$wgcf_dir/$wgcf_account" status 2>&1)
-    account_type=$(echo "$plus_status" | awk -F': +' '/Account type/ {print $2}')
+    local plus_status
+    local account_type
+    local license
+    local wgcf_cmd
 
-    if [[ $account_type == "limited" ]]; then
-        echo "Warp+ is installed. No need to upgrade again."
+    plus_status="$($wgcf_bin --config "$wgcf_dir/$wgcf_account" status 2>&1)"
+    account_type="$(echo "$plus_status" | awk -F': +' '/Account type/ {print $2}')"
+
+    if [[ "$account_type" == "limited" ]]; then
+        LOGN "WARP+ is already installed."
         return 0
     fi
 
     while true; do
-        echo -n "Enter Warp+ license (or 0 to go back): "
+        echo -n "Enter WARP+ license (or 0 to go back): "
         read -r license
-        if [[ $license == "0" ]]; then
-            return
+        if [[ "$license" == "0" ]]; then
+            return 0
         fi
-        # Validate the license
-        if [[ ${#license} -eq 26 && $license =~ ^[a-zA-Z0-9-]+$ ]]; then
-            break  # Exit loop if the license is valid
+
+        if (( ${#license} == 26 )) && [[ "$license" =~ ^[a-zA-Z0-9-]+$ ]]; then
+            break
         else
-            echo "Invalid license. Please enter a valid Warp+ license."
+            LOGW "Invalid license. Please enter a valid WARP+ license."
         fi
     done
 
+    if ! cd "$wgcf_dir"; then
+        LOGE "Failed to enter $wgcf_dir."
+        return 1
+    fi
+
     rm -f "$wgcf_dir/$wgcf_account" >/dev/null 2>&1
     rm -f "$wgcf_dir/$wgcf_profile" >/dev/null 2>&1
-    cd "$wgcf_dir"
 
     if ! register_warp; then
         get_back
+        return $?
     fi
 
-    wgcf_cmd=$($wgcf_bin --config "$wgcf_dir/$wgcf_account" update --license-key "${license}" 2>&1)
+    wgcf_cmd="$($wgcf_bin --config "$wgcf_dir/$wgcf_account" update --license-key "${license}" 2>&1)"
     if echo "$wgcf_cmd" | grep -q "Successfully updated"; then
-        wgcf_cmd=$("$wgcf_bin" --config "$wgcf_dir/$wgcf_account" generate >/dev/null 2>&1)
-        mtu_transfer
-        echo "Warp has been successfully upgraded to Warp+."
+        if ! "$wgcf_bin" --config "$wgcf_dir/$wgcf_account" generate >/dev/null 2>&1; then
+            LOGE "WARP+ license was updated, but profile generation failed. Restoring the free WARP account."
+            get_back
+            return $?
+        fi
+        if ! mtu_transfer; then
+            LOGE "WARP+ profile was generated, but MTU restoration failed."
+            return 1
+        fi
+        LOGS "WARP has been upgraded to WARP+ successfully."
+        return 0
     else
-        echo "Failed, use another license."
+        LOGE "Upgrade failed. Please use another license."
         get_back
+        return $?
     fi
 }
 
 wgcf_outbound_json() {
-    wgcf_get_configuration
-    # Generate and display JSON structure
+    local private_key
+    local address
+    local mtu
+
+    {
+        IFS= read -r private_key
+        IFS= read -r address
+        IFS= read -r mtu
+    } < <(wgcf_get_configuration)
+
     echo -e "${italic_text}${teal}    {
       \"tag\": \"warp\",
       \"protocol\": \"wireguard\",
@@ -1179,47 +1826,42 @@ wgcf_outbound_json() {
     exit 0
 }
 
-# Function to uninstall Warp
+# Function to uninstall WARP
 uninstall_warp() {
-    confirm "Are you sure you want to uninstall the Warp?" "n"
-    if [[ $? != 0 ]]; then
-        if [[ $# == 0 ]]; then
-            wgcf_menu
-        fi
+    if ! confirm "Are you sure you want to uninstall WARP?" "n"; then
         return 0
     fi
     rm -f "$wgcf_bin"
     rm -fr "$wgcf_dir"
-    LOGI "Warp removed successfully."
+    LOGS "WARP removed successfully."
     exit 0
 }
 
 wgcf_menu() {
-    echo -e "\t${orange}Warp Management${plain}"
-    echo -e "\t${orange}1.${plain} Status"
-    echo -e "\t${orange}2.${plain} Install Warp (wgcf)"
-    echo -e "\t${orange}3.${plain} Warp Plus"
-    echo -e "\t${orange}4.${plain} Warp Outbound (json)"
-    echo -e "\t${orange}5.${plain} Uninstall Warp"
-    echo -e "\t${orange}0.${plain} Back to Main Menu"
-    echo -n "Select an option: "
-    read -r option
+    local option
 
-    case $option in
+    while true; do
+        echo -e "\t${orange}WARP Management${plain}"
+        echo -e "\t${orange}1.${plain} Status"
+        echo -e "\t${orange}2.${plain} Install WARP (wgcf)"
+        echo -e "\t${orange}3.${plain} WARP Plus"
+        echo -e "\t${orange}4.${plain} WARP Outbound (json)"
+        echo -e "\t${orange}5.${plain} Uninstall WARP"
+        echo -e "\t${orange}0.${plain} Back to Main Menu"
+        read -r -p "Select an option: " option
+
+        case "$option" in
         0)
-            show_menu
+            return 0
             ;;
         1)
             check_existence_wgcf && wgcf_status
-            wgcf_menu
             ;;
         2)
             check_absence_wgcf && install_warp
-            wgcf_menu
             ;;
         3)
             check_existence_wgcf && upgrade_warp_plus
-            wgcf_menu
             ;;
         4)
             check_existence_wgcf && wgcf_outbound_json
@@ -1229,20 +1871,55 @@ wgcf_menu() {
             ;;
         *)
             LOGE "Invalid option. Please try again."
-            wgcf_menu
             ;;
-    esac
+        esac
+    done
 }
 
+# [Proxy management]
+
+proxy_menu() {
+    local choice
+
+    while true; do
+        show_proxy_status
+        echo -e "\t${blue}1.${plain} Set proxy"
+        echo -e "\t${blue}2.${plain} Clear proxy"
+        echo -e "\t${blue}3.${plain} Test proxy"
+        echo -e "\t${blue}0.${plain} Back to Main Menu"
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+        0)
+            return 0
+            ;;
+        1)
+            set_proxy_interactive
+            ;;
+        2)
+            clear_proxy
+            ;;
+        3)
+            test_proxy
+            ;;
+        *)
+            LOGE "Invalid option. Please try again."
+            ;;
+        esac
+    done
+}
+
+# [Cron management]
+
 install_cron() {
-    echo -e "The OS release is: ${color_100}$release${plain}"
+    echo -e "Detected OS release: ${color_100}$release${plain}"
     case "$release" in
     ubuntu | debian | armbian)
         apt-get update && apt-get install --no-install-recommends -y -q cron
         ;;
     *)
         LOGE "Your operating system is not supported"
-        exit 1
+        return 1
         ;;
     esac
 
@@ -1250,32 +1927,32 @@ install_cron() {
         LOGN "Cron is installed."
     else
         LOGE "Failed to install Cron. Please install it manually."
-        exit 1
+        return 1
     fi
 }
 
 # Function to check if a cron job exists
 check_cron() {
     local cron_line
-    cron_line=$(crontab -l 2>/dev/null | grep "$cron_cmd")
+    cron_line=$(crontab -l 2>/dev/null | grep -F "$cron_cmd")
     if [[ -n "$cron_line" ]]; then
         local cron_interval
         cron_interval=$(echo "$cron_line" | awk -F'/' '{print $2}' | awk '{print $1}')
         echo -e "Cron job: ${bold_text}${green}Active${green} (Every $cron_interval minutes)${plain}"
     else
-        echo -e "Cron job: ${yellow}not active${plain}"
+        echo -e "Cron job: ${yellow}Not Active${plain}"
     fi
 }
 
 # Function to add a cron job
 add_cron() {
     local cron_interval
+    local input
     while true; do
         echo -ne "Enter a number between 1 and 30 - ${blue}default is every minute${plain} (or 0 to exit):"
         read -r input
         if [[ "$input" == "0" ]]; then
-            echo "Exiting..."
-            exit 0
+            return 0
         elif [[ -z "$input" ]]; then
             cron_interval=1
             break
@@ -1283,31 +1960,40 @@ add_cron() {
             cron_interval=$input
             break
         else
-            echo "The number is not between 1 and 30."
+            LOGW "The number is not between 1 and 30."
         fi
     done
-    install_cron
-    # Remove existing cron job if it exists
-    crontab -l 2>/dev/null | grep -v "$cron_cmd" | crontab -
-    # Add new cron job
-    (crontab -l 2>/dev/null; echo "*/$cron_interval * * * * $cron_cmd") | crontab -
-    if [[ $? == 0 ]]; then
-        LOGI "Cron job added successfully"
+    if ! install_cron; then
         before_show_menu
+        return 1
     fi
+    # Remove existing cron job if it exists
+    crontab -l 2>/dev/null | grep -F -v "$cron_cmd" | crontab -
+    # Add new cron job
+    if (crontab -l 2>/dev/null; echo "*/$cron_interval * * * * $cron_cmd") | crontab -; then
+        LOGS "Cron job added successfully"
+        before_show_menu
+        return 0
+    fi
+
+    LOGE "Failed to add cron job."
+    before_show_menu
+    return 1
 }
 
 # Function to remove a cron job
 remove_cron() {
     if crontab -l 2>/dev/null | grep -q "$cron_cmd"; then
-        crontab -l 2>/dev/null | grep -v "$cron_cmd" | crontab -
-        LOGI "Cron job removed successfully."
+        crontab -l 2>/dev/null | grep -F -v "$cron_cmd" | crontab -
+        LOGS "Cron job removed successfully."
     else
-        LOGW "No cron job found to remove."
+        LOGW "No cron job was found."
     fi
 }
 
 cron_menu() {
+    local choice
+
     while true; do
         echo -e "\t${blue}1.${plain} Add cron job"
         echo -e "\t${blue}2.${plain} Remove cron"
@@ -1315,25 +2001,30 @@ cron_menu() {
         echo -n "Enter your choice: "
         read -r choice
 
-        case $choice in
-            0)
-                show_menu
-                ;;
-            1)
-                add_cron
-                ;;
-            2)
-                remove_cron
-                ;;
-            *)
-                echo "Invalid choice. Please try again."
-                ;;
+        case "$choice" in
+        0)
+            return 0
+            ;;
+        1)
+            add_cron
+            ;;
+        2)
+            remove_cron
+            ;;
+        *)
+            echo "Invalid choice. Please try again."
+            ;;
         esac
     done
 }
 
+# [Interactive main menu]
+
 show_menu() {
-    echo -e "╔═══════════════════════════════╗
+    local num
+
+    while true; do
+        echo -e "╔═══════════════════════════════╗
 ║   ${color_100} _______  __${plain}                ║
 ║   ${color_100}/_  __/ |/_/${color_200}___${color_300}___ _${color_400}__ __${plain}   ║
 ║   ${color_100} / / _>  </${color_200} __/${color_300} _ \`${color_400}/ // /${plain}   ║
@@ -1359,72 +2050,78 @@ show_menu() {
 ║───────────────────────────────║
 ║  ${color_100}13.${plain} Enable BBR               ║
 ║  ${color_100}14.${plain} Update Geo Files         ║
-║  ${color_100}15.${plain} Warp (wgcf)              ║
+║  ${color_100}15.${plain} WARP (wgcf)              ║
 ║  ${color_100}16.${plain} Cron (for access.log)    ║
+║  ${color_100}17.${plain} Proxy Settings           ║
 ╚═══════════════════════════════╝
 "
-    show_status
-    echo && read -p "Please enter your selection [0-16]: " num
+        show_status
+        echo
+        read -r -p "Please enter your selection [0-17]: " num
 
-    case "${num}" in
-    0)
-        exit 0
-        ;;
-    1)
-        check_uninstall && install_txray
-        ;;
-    2)
-        check_install && update
-        ;;
-    3)
-        check_install && update_menu
-        ;;
-    4)
-        another_version
-        ;;
-    5)
-        check_install && uninstall
-        ;;
-    6)
-        check_install && start
-        ;;
-    7)
-        check_install && stop
-        ;;
-    8)
-        check_install && restart
-        ;;
-    9)
-        check_install && status
-        ;;
-    10)
-        check_install && show_log
-        ;;
-    11)
-        check_install && enable
-        ;;
-    12)
-        check_install && disable
-        ;;
-    13)
-        bbr_menu
-        ;;
-    14)
-        check_install && update_geo
-        ;;
-    15)
-        wgcf_menu
-        ;;
-    16)
-        check_install && cron_menu
-        ;;
-    *)
-        LOGE "Please enter the correct number [0-16]"
-        ;;
-    esac
+        case "${num}" in
+        0)
+            exit 0
+            ;;
+        1)
+            check_uninstall && install_txray
+            ;;
+        2)
+            check_install && update
+            ;;
+        3)
+            check_install && update_menu
+            ;;
+        4)
+            another_version
+            ;;
+        5)
+            check_install && uninstall
+            ;;
+        6)
+            check_install && start
+            ;;
+        7)
+            check_install && stop
+            ;;
+        8)
+            check_install && restart
+            ;;
+        9)
+            check_install && status
+            ;;
+        10)
+            check_install && show_log
+            ;;
+        11)
+            check_install && enable
+            ;;
+        12)
+            check_install && disable
+            ;;
+        13)
+            bbr_menu
+            ;;
+        14)
+            check_install && update_geo
+            ;;
+        15)
+            wgcf_menu
+            ;;
+        16)
+            check_install && cron_menu
+            ;;
+        17)
+            proxy_menu
+            ;;
+        *)
+            LOGE "Please enter a number between 0 and 17."
+            ;;
+        esac
+    done
 }
 
-if [[ $# > 0 ]]; then
+if (( $# > 0 )); then
     case $1 in
     "start")
         check_install 0 && start 0
@@ -1437,9 +2134,6 @@ if [[ $# > 0 ]]; then
         ;;
     "status")
         check_install 0 && status 0
-        ;;
-    "settings")
-        check_install 0 && check_config 0
         ;;
     "enable")
         check_install 0 && enable 0

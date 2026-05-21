@@ -15,7 +15,7 @@
 
 ## Run
 
-```
+```bash
 bash <(curl -Ls https://raw.githubusercontent.com/tararostami/txray/master/txray.sh)
 ```
 
@@ -40,13 +40,29 @@ bash <(curl -Ls https://raw.githubusercontent.com/tararostami/txray/master/txray
 
 ## Features
 
-- Install the latest version of Xray core
-- Display version and status of Xray core
-- Easy installation of different versions
-- Option to install Warp and Warp+
-- Add cron for access.log
-- Completely clean uninstall
+- Install the latest version of Xray Core
+- Display version and status of Xray Core
+- Install a specific Xray Core version
+- Update TXray
+- Session-wide proxy support for curl-based downloads
+- Interactive proxy settings menu
+- Proxy validation and connection testing
+- Install WARP and WARP+
+- Add cron for access.log cleanup
+- Clean uninstall
 - Download and update geo files
+
+## Proxy Support
+
+TXray supports session-wide proxy usage for all curl-based downloads.
+
+You can use a proxy from the command line with the `TXRAY_PROXY` environment variable:
+
+```bash
+TXRAY_PROXY="socks5h://127.0.0.1:1080" txray install
+```
+
+> Note: Proxy support applies to TXray's curl-based downloads. Package manager traffic such as `apt`, `yum`, `dnf`, `pacman`, and external commands such as `wgcf register` are not automatically routed through this proxy setting.
 
 ## Preview
 
